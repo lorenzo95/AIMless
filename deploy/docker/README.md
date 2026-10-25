@@ -119,6 +119,9 @@ Custom peers go in `daemon/config.json`:
 {"peers": ["tcp://nodea:9001"], "listen": []}
 ```
 
+Peer URI schemes and options, and the daemon flags: `docs/networking.md` in
+the repo root.
+
 > **Upgrading from an older image?** The volume layout changed; old
 > `state/`/`config/` directories are ignored. Recreate the volume and restore
 > from an encrypted backup via **Import backup…** on the first-run screen.

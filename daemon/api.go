@@ -13,7 +13,7 @@ import (
 	"sync"
 )
 
-const buildVersion = "aimlessd/0.9.5"
+const buildVersion = "aimlessd/0.9.6"
 
 // protocolVersion identifies the wire format spoken to other daemons. Peers on a
 // different version are ignored rather than misparsed; there is no compat layer.

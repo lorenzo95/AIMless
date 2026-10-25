@@ -74,6 +74,37 @@ The only thing outside the root is the login autostart entry (`~/.config/autosta
 
 > **Upgrading from an older version?** This release changed the on-disk layout; old files are not migrated. To keep your identity, **export a backup first** (Keys & Identity → *Export encrypted backup*) or copy `identity.json`/`node.key`/`client-contacts.json` by hand, then use **Import backup…** on the first-run screen. Message history and attachments are not preserved by the backup.
 
+## Peers
+
+`aimlessd` is an embedded [Yggdrasil](https://yggdrasil-network.github.io/) node, so it needs **peers** to reach anyone else. Out of the box it dials a small set of public ones. The status bar shows `peers N/M` (N up of M configured) and reads *"connecting - no Yggdrasil peers yet"* while none of them answer.
+
+### Where to set them
+
+| Where | How | Notes |
+|---|---|---|
+| `daemon/config.json` | `"peers": [...]` | The normal way - persists across restarts. |
+| `aimlessd -peers` | `-peers uri1,uri2` | Overrides the config file entirely (it replaces, never merges). `-peers none` runs with no peers at all. |
+| Built-in | `defaultPeers` in `daemon/main.go` | Used when neither of the above is set. |
+
+`config.json` also takes `"listen": [...]` for inbound links, with `-listen` as the flag equivalent. Every peer URI scheme and option, all daemon flags, and troubleshooting notes are in **[docs/networking.md](docs/networking.md)**.
+
+### Using your own peers
+
+Public peers go offline, and when their domain lapses the DNS record is parked - the hostname resolves to `0.0.0.0`, which connects to localhost and is refused instantly. The live list, refreshed hourly, is at <https://publicpeers.neilalexander.dev/>; take a few nearby ones with good uptime.
+
+```json
+{
+  "peers": [
+    "tls://23.184.48.86:1443",
+    "tls://31.22.111.195:32000"
+  ]
+}
+```
+
+Write it to `daemon/config.json`, then restart aimless (`aimless stop`, reopen). The status bar should go green with `peers N/M`.
+
+> Routing to another AIMless node takes a moment the first time - Yggdrasil refreshes its routing table every few minutes, so a message to a never-before-seen peer can take a minute or two to find its way. Queued messages retry on their own, so nothing is lost while the route is being worked out.
+
 ## Using it
 
 The tray owns the daemon: closing the window just hides it (tray click reopens; tray *Quit* shuts everything down).

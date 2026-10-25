@@ -30,9 +30,19 @@ func acquireLock(datadir string) error {
 	return nil
 }
 
+// defaultPeers are public Yggdrasil nodes used when the datadir has no
+// config.json. Public peers go offline and their DNS records get parked
+// (the hostname resolves to 0.0.0.0), so this list needs rotating - check
+// https://publicpeers.neilalexander.dev/ for the current set.
+//
+// Users are not stuck with these: daemon/config.json {"peers": [...]} overrides
+// them entirely, and aimlessd -peers takes a comma-separated list.
 var defaultPeers = []string{
-	"tls://london.sabretruth.org:18472",
-	"tls://yggdrasil.neilalexander.dev:64648?key=ecbbcb3298e7d3b4196103333c3e839cfe47a6ca47602b94a6d596683f6bb358",
+	"tls://23.184.48.86:1443",
+	"tls://31.22.111.195:32000",
+	"tls://192.3.13.16:8118",
+	"tls://5.252.118.13:443",
+	"tls://109.176.250.101:65534",
 }
 
 const defaultInboxCapacity = 50
