@@ -1290,9 +1290,13 @@ def test_room_dots_markup():
           "n3": {}}
     markup = _room_dots_markup(members, pb, exclude="me")
     assert markup.count("●") == 3
-    greens = markup.count("#a6e3a1")
-    oranges = markup.count("#fab387")
-    grays = markup.count("#6c7086")
+    # The colours come from the active palette, which depends on the detected
+    # system theme - hardcoding one palette's hex values made this fail on
+    # every machine that is not running that theme.
+    colors = gtkui.C
+    greens = markup.count(colors["online"])
+    oranges = markup.count(colors["away"])
+    grays = markup.count(colors["offline"])
     assert (greens, oranges, grays) == (1, 1, 1), markup
     # self is excluded
     assert _room_dots_markup({"me": {"screen": "Me"}}, {}, exclude="me") == ""
@@ -1336,7 +1340,8 @@ def test_room_header_markup_and_live_update(gtk_app):
                                    "cd" * 32: {"online": True, "client_attached": False}})
     header = win.messages.conversation_header.get_label()
     assert header.count("●") == 2, "header shows one dot per member"
-    assert "#a6e3a1" in header and "#fab387" in header, "client-offline member is orange"
+    colors = gtkui.C
+    assert colors["online"] in header and colors["away"] in header, "client-offline member is orange"
     assert "1/2 online" in header
 
     win.messages.refresh_presence({b_node: {"online": False}, "cd" * 32: {"online": False}})
@@ -1859,6 +1864,97 @@ def test_application_identity_names_the_process(gtk_app):
     gtkui.setup_application_identity()
     assert GLib.get_prgname() == "aimless"
     assert Gdk.get_program_class() == "AIMless"
+
+
+def test_desktop_entry_lets_the_taskbar_find_us(tmp_path, monkeypatch):
+    """Without a .desktop file the taskbar has nothing to match the window
+    against: it falls back to a generic icon and offers no application menu
+    on right-click, because there is no application to build one from."""
+    from aimless import appicon
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setattr(gtkui, "app_exec_line", lambda mode="gui": "aimless gui")
+    appicon.install()
+
+    path = gtkui.install_desktop_entry()
+    assert path, "the desktop entry should be installed"
+    text = open(path).read()
+    assert "Type=Application" in text
+    assert f"Icon={appicon.ICON_NAME}" in text, "the taskbar resolves the icon from here"
+    assert "StartupWMClass=aimless" in text, "must match the WM_CLASS we set"
+    assert "Exec=aimless gui" in text
+
+
+def test_icon_name_is_published_on_the_window(gtk_app):
+    """GTK leaves _NET_WM_ICON_NAME holding the window title, so a panel
+    resolving the taskbar icon by name looks up 'AIMless' - which does not
+    exist - and falls back to a placeholder icon."""
+    import shutil
+    import subprocess
+
+    from aimless import appicon
+
+    win = gtkui.Gtk.Window(title="AIMless")
+    gtkui.setup_app_icon(win)
+    win.show_all()
+    try:
+        while not win.get_realized():
+            gtkui.GLib.MainContext.default().iteration(False)
+        gtkui.set_net_wm_icon_name(win, appicon.ICON_NAME)
+
+        xprop = shutil.which("xprop")
+        if not xprop:
+            pytest.skip("xprop is not installed")
+        try:
+            xid = win.get_window().get_xid()
+        except AttributeError:
+            pytest.skip("not an X11 session")
+        out = subprocess.run([xprop, "-id", str(xid), "_NET_WM_ICON_NAME"],
+                             capture_output=True, text=True).stdout
+        assert appicon.ICON_NAME in out, f"got {out!r}"
+    finally:
+        win.destroy()
+
+
+def test_default_icon_covers_windows_we_do_not_touch(gtk_app, tmp_path, monkeypatch):
+    """The unlock dialog is the first window the user ever sees, and it is a
+    plain Gtk.Dialog - a window we never set an icon on. Without a
+    process-wide default it carries the theme's generic placeholder, which is
+    the gear that showed up in the taskbar."""
+    from aimless import appicon
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    appicon.install()
+    gtkui.setup_application_identity()
+
+    assert Gtk.Window.get_default_icon_name() == appicon.ICON_NAME
+
+
+def test_passphrase_dialog_carries_the_app_icon(tmp_path, monkeypatch):
+    """The unlock dialog is the window that is on screen when the app
+    starts, so it is the one the taskbar shows."""
+    from aimless import appicon
+
+    if not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+        pytest.skip("no display")
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    appicon.install()
+
+    seen = {}
+
+    def fake_run(self):
+        seen["dlg"] = self
+        return Gtk.ResponseType.CANCEL
+
+    monkeypatch.setattr(Gtk.Dialog, "run", fake_run, raising=False)
+    gtkui.ask_passphrase(None)
+
+    dlg = seen["dlg"]
+    try:
+        assert dlg.get_icon_name() == appicon.ICON_NAME
+    finally:
+        dlg.destroy()
 
 
 def test_app_icon_is_drawn_at_every_size():

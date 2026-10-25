@@ -70,7 +70,17 @@ Everything lives under one root - `~/.local/share/aimless` by default, or `$AIML
 └── run/       app.pid · aimlessd.pid · tunnel.pid
 ```
 
-Two things live outside the root: the login autostart entry (`~/.config/autostart/aimless-tray.desktop`), which the desktop spec pins there, and the app icon (`~/.local/share/icons/hicolor/*/apps/aimless*.png`), which has to sit in the icon theme for the taskbar and the desktop shell to find it. The icon is drawn at startup and only rewritten when it changes.
+Three things live outside the root, all of them things the desktop spec pins elsewhere:
+
+| What | Where | Why |
+|---|---|---|
+| Login autostart entry | `~/.config/autostart/aimless-tray.desktop` | the desktop spec pins it there |
+| App icon | `~/.local/share/icons/hicolor/*/apps/aimless*.png` | has to sit in the icon theme for the taskbar and shell to find it |
+| Desktop entry | `~/.local/share/applications/aimless.desktop` | without it the taskbar cannot match the window to the app |
+
+The last one matters more than it looks: with no desktop entry the taskbar shows a generic placeholder instead of the app icon, and right-clicking the entry offers no application menu - because there is no application for the shell to build one from. The entry carries `Icon=aimless` and `StartupWMClass=aimless`, which has to match the `WM_CLASS` the window advertises.
+
+The icon is the AIM *running man* - yellow on a blue tile - drawn with Cairo at startup (the repo carries no binary assets) and written to the icon theme. It is only rewritten when it changes. Every window the app opens carries it, including the unlock dialog that is on screen before you type your passphrase.
 
 > **Upgrading from an older version?** This release changed the on-disk layout; old files are not migrated. To keep your identity, **export a backup first** (Keys & Identity → *Export encrypted backup*) or copy `identity.json`/`node.key`/`client-contacts.json` by hand, then use **Import backup…** on the first-run screen. Message history and attachments are not preserved by the backup.
 

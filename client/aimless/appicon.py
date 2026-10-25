@@ -7,8 +7,8 @@ the tray and the desktop shell can all find them by name.
 
 Two variants are produced:
 
-``aimless``          the plain heart
-``aimless-unread``   the same heart with a badge in the corner
+``aimless``          the plain running man
+``aimless-unread``   the same running man with a badge in the corner
 
 The tray swaps between them, so an unread message is visible without having
 to hover for the tooltip.
@@ -26,12 +26,12 @@ UNREAD_ICON_NAME = "aimless-unread"
 # 22/24, but the theme picks the closest match for whatever the desktop asks.
 SIZES = (16, 22, 24, 32, 48, 64, 128, 256)
 
-# Colours. The blue is the app's own accent (theme "bubble_out"/"link"), the
-# badge red is the standard "unread" red rather than the theme's softer
-# "danger" pink, so it stays legible against the blue.
-_BLUE_TOP = (0.62, 0.77, 1.00)
-_BLUE_BOTTOM = (0.30, 0.52, 0.91)
-_HEART = (1.0, 1.0, 1.0)
+# Colours. The blue is the AIM-ish blue of the tile, the figure is the
+# classic yellow, and the badge red is the standard "unread" red rather than
+# the theme's softer "danger" pink, so it stays legible against the blue.
+_BLUE_TOP = (0.29, 0.66, 0.93)
+_BLUE_BOTTOM = (0.05, 0.40, 0.72)
+_FIGURE = (1.0, 0.85, 0.24)
 _BADGE = (0.90, 0.28, 0.24)
 
 _cache = {}
@@ -77,19 +77,53 @@ def _rounded_rect(ctx, x, y, w, h, r):
     ctx.close_path()
 
 
-def _heart(ctx, size):
-    """A heart in the middle of a size x size box, as a normalised path."""
+def _running_man(ctx, size):
+    """The AIM 'running man': a round head, a body leaning forward, arms and
+    legs mid-stride.
+
+    Drawn from scratch rather than traced from the AOL artwork - the pose and
+    the yellow are what make it read as AIM, the exact shape is ours.
+    """
+    import cairo
+
     def p(x, y):
         return x * size, y * size
 
-    ctx.move_to(*p(0.50, 0.88))
-    ctx.curve_to(*p(0.50, 0.88), *p(0.06, 0.54), *p(0.06, 0.30))
-    ctx.curve_to(*p(0.06, 0.12), *p(0.19, 0.03), *p(0.31, 0.03))
-    ctx.curve_to(*p(0.41, 0.03), *p(0.47, 0.10), *p(0.50, 0.17))
-    ctx.curve_to(*p(0.53, 0.10), *p(0.59, 0.03), *p(0.69, 0.03))
-    ctx.curve_to(*p(0.81, 0.03), *p(0.94, 0.12), *p(0.94, 0.30))
-    ctx.curve_to(*p(0.94, 0.54), *p(0.50, 0.88), *p(0.50, 0.88))
-    ctx.close_path()
+    limb = size * 0.088
+
+    ctx.set_line_width(limb)
+    ctx.set_line_cap(cairo.LINE_CAP_ROUND)
+    ctx.set_line_join(cairo.LINE_JOIN_ROUND)
+
+    # Back leg, extended behind.
+    ctx.move_to(*p(0.50, 0.62))
+    ctx.curve_to(*p(0.44, 0.74), *p(0.36, 0.84), *p(0.24, 0.88))
+    ctx.stroke()
+
+    # Back arm, swung back.
+    ctx.move_to(*p(0.44, 0.47))
+    ctx.curve_to(*p(0.34, 0.50), *p(0.27, 0.56), *p(0.22, 0.63))
+    ctx.stroke()
+
+    # Torso, leaning into the run.
+    ctx.move_to(*p(0.43, 0.42))
+    ctx.curve_to(*p(0.47, 0.49), *p(0.50, 0.55), *p(0.50, 0.63))
+    ctx.stroke()
+
+    # Front leg, driving forward and up.
+    ctx.move_to(*p(0.50, 0.62))
+    ctx.curve_to(*p(0.60, 0.66), *p(0.70, 0.68), *p(0.76, 0.62))
+    ctx.stroke()
+
+    # Front arm, punched forward.
+    ctx.move_to(*p(0.45, 0.46))
+    ctx.curve_to(*p(0.54, 0.42), *p(0.62, 0.38), *p(0.68, 0.31))
+    ctx.stroke()
+
+    # Head - deliberately big, the way the classic mascot had it.
+    ctx.new_sub_path()
+    ctx.arc(*p(0.35, 0.27), size * 0.150, 0, 6.2831853)
+    ctx.fill()
 
 
 def render(size=48, unread=False):
@@ -112,15 +146,13 @@ def render(size=48, unread=False):
     ctx.set_source(grad)
     ctx.fill()
 
-    # White heart. Scaled down inside the tile so it keeps a blue margin and
-    # still reads as a heart at 16px, and nudged down to leave the top-right
-    # corner free for the unread badge.
-    ctx.set_source_rgb(*_HEART)
+    # The running man. Scaled inside the tile so it keeps a blue margin, and
+    # nudged left so the top-right corner stays free for the unread badge.
+    ctx.set_source_rgb(*_FIGURE)
     ctx.save()
-    ctx.translate(size * 0.10, size * 0.12)
-    ctx.scale(0.80, 0.80)
-    _heart(ctx, size)
-    ctx.fill()
+    ctx.translate(size * 0.04, size * 0.05)
+    ctx.scale(0.92, 0.92)
+    _running_man(ctx, size)
     ctx.restore()
 
     if unread:
@@ -216,6 +248,12 @@ def register():
                     theme.append_search_path(path)
             except Exception:
                 continue
+        try:
+            # The PNGs were written a moment ago; the theme caches what it
+            # saw when it was first scanned, so ask it to look again.
+            theme.rescan_if_needed()
+        except Exception:
+            pass
         return True
     except Exception:
         return False

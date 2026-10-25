@@ -643,6 +643,28 @@ def first_icon(*names):
     return names[-1]
 
 
+def set_net_wm_icon_name(window, name):
+    """Publish the icon *name* on the X window.
+
+    GTK leaves _NET_WM_ICON_NAME holding the window title, so a panel that
+    resolves the taskbar icon by name looks up 'AIMless' - which does not
+    exist - and falls back to a generic placeholder. The property is set
+    once at realize and does not track the title, so this sticks even when
+    the title changes to 'AIMless (3)'.
+    """
+    try:
+        gdk_window = window.get_window()
+        if gdk_window is None:
+            return
+        gi.require_version("GdkX11", "3.0")
+        from gi.repository import GdkX11
+        if isinstance(gdk_window, GdkX11.X11Window):
+            gdk_window.set_utf8_property("_NET_WM_ICON_NAME", name)
+    except Exception:
+        # Wayland has no _NET_WM_ICON_NAME; the desktop entry covers it there.
+        pass
+
+
 def setup_app_icon(window):
     """Give a window a real application icon and a usable WM_CLASS.
 
@@ -660,6 +682,8 @@ def setup_app_icon(window):
         if appicon.has_icon():
             window.set_icon_name(appicon.ICON_NAME)
             window.set_default_icon_name(appicon.ICON_NAME)
+            window.connect("realize",
+                           lambda w: set_net_wm_icon_name(w, appicon.ICON_NAME))
         else:
             # No icon theme entry (first run before the icons are written, or
             # a read-only home): fall back to a pixbuf, then to a theme icon.
@@ -694,6 +718,15 @@ def setup_application_identity():
         settings = Gtk.Settings.get_default()
         if settings is not None and appicon.has_icon():
             settings.set_property("gtk-application-icon-name", appicon.ICON_NAME)
+    except Exception:
+        pass
+    try:
+        # Process-wide default: every window we do not touch ourselves - the
+        # unlock dialog, message dialogs, GTK's own file chooser - picks the
+        # app icon up from here. Without it those windows carry the theme's
+        # generic placeholder, which is what the taskbar showed.
+        if appicon.has_icon():
+            Gtk.Window.set_default_icon_name(appicon.ICON_NAME)
     except Exception:
         pass
 
@@ -3807,6 +3840,7 @@ class AimlessWindow(Gtk.Window):
 
 def ask_secret(parent, title, confirm=False):
     dlg = Gtk.Dialog(title=title, transient_for=parent, modal=True)
+    setup_app_icon(dlg)
     dlg.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "OK", Gtk.ResponseType.OK)
     dlg.set_default_response(Gtk.ResponseType.OK)
     dlg.set_default_size(380, -1)
@@ -3851,6 +3885,7 @@ def _error_dialog(parent, text):
 
 def ask_passphrase(parent):
     dlg = Gtk.Dialog(title="AIMless - passphrase", transient_for=parent, modal=True)
+    setup_app_icon(dlg)
     dlg.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Unlock", Gtk.ResponseType.OK)
     dlg.set_default_response(Gtk.ResponseType.OK)
     dlg.set_default_size(360, 100)
@@ -3875,6 +3910,7 @@ def ask_create_identity(parent):
     Returns None (cancelled / empty), ("__mismatch__",), ("__import__",) or
     (passphrase, screen)."""
     dlg = Gtk.Dialog(title=f"{APP_NAME} - create your identity", transient_for=parent, modal=True)
+    setup_app_icon(dlg)
     dlg.add_buttons("Cancel", Gtk.ResponseType.CANCEL,
                     "Import backup…", Gtk.ResponseType.APPLY,
                     "Create identity", Gtk.ResponseType.OK)
@@ -4187,6 +4223,12 @@ class AimlessApp:
         except Exception as e:
             self.log(f"could not install the app icon: {e!r}")
         setup_application_identity()
+        # Register the app with the desktop so the taskbar can match the
+        # window to it and show a real icon (and an application menu).
+        try:
+            install_desktop_entry()
+        except Exception as e:
+            self.log(f"could not install the desktop entry: {e!r}")
 
     def start(self, open_window):
         rc = self._setup(open_window)
@@ -4694,6 +4736,67 @@ def read_pid(path):
 
 
 
+def app_exec_line(mode="gui"):
+    """The command line that starts the app, for the desktop entries.
+
+    Prefers an installed `aimless` command, falls back to the .pyz next to
+    it. Returns None if neither can be found.
+    """
+    aimless_bin = shutil.which("aimless") or os.path.expanduser("~/.local/bin/aimless")
+    if os.path.exists(aimless_bin):
+        return f"{aimless_bin} {mode}".strip()
+    for d in (os.path.dirname(os.path.abspath(sys.argv[0])), os.getcwd(),
+              os.path.expanduser("~/.local/bin")):
+        pyz = os.path.join(d, "aimless.pyz")
+        if os.path.exists(pyz):
+            return f"{sys.executable} {pyz} {mode}".strip()
+    return None
+
+
+def install_desktop_entry():
+    """Install a .desktop entry so the desktop can identify this app.
+
+    Without one the taskbar has nothing to match the window against: it
+    falls back to a generic icon and offers no application menu on
+    right-click, because there is no application to build a menu from.
+    StartupWMClass has to match the WM_CLASS we set ('aimless').
+    """
+    try:
+        appicon.install()
+    except Exception:
+        pass
+    exec_line = app_exec_line("gui")
+    if not exec_line:
+        return None
+    data_home = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+    path = os.path.join(data_home, "applications", "aimless.desktop")
+    content = (
+        "[Desktop Entry]\n"
+        "Type=Application\n"
+        "Name=AIMless\n"
+        "GenericName=Instant Messenger\n"
+        "Comment=Serverless instant messaging over the Yggdrasil overlay network\n"
+        f"Exec={exec_line}\n"
+        f"Icon={appicon.ICON_NAME}\n"
+        "Terminal=false\n"
+        "StartupWMClass=aimless\n"
+        "StartupNotify=true\n"
+        "Categories=Network;InstantMessaging;\n"
+        "Keywords=chat;im;aim;messaging;\n"
+    )
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        old = None
+        if os.path.exists(path):
+            with open(path) as f:
+                old = f.read()
+        if old != content:
+            with open(path, "w") as f:
+                f.write(content)
+        return path
+    except OSError:
+        return None
+
 def install_autostart():
     desktop_path = paths.autostart_path()
     autostart_dir = os.path.dirname(desktop_path)
@@ -4703,17 +4806,7 @@ def install_autostart():
     except Exception:
         pass
 
-    exec_line = None
-    aimless_bin = shutil.which("aimless") or os.path.expanduser("~/.local/bin/aimless")
-    if os.path.exists(aimless_bin):
-        exec_line = f"{aimless_bin} tray"
-    else:
-        for d in (os.path.dirname(os.path.abspath(sys.argv[0])), os.getcwd(),
-                  os.path.expanduser("~/.local/bin")):
-            pyz = os.path.join(d, "aimless.pyz")
-            if os.path.exists(pyz):
-                exec_line = f"{sys.executable} {pyz} tray"
-                break
+    exec_line = app_exec_line("tray")
     if not exec_line:
         return None
 
