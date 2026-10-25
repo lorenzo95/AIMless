@@ -33,6 +33,7 @@ from gi.repository import Gtk, GLib, Gdk, Pango, GdkPixbuf, Gio
 
 from . import crypto, protocol, logging, paths
 from . import tunnel
+from . import appicon
 from . import keys as keysmod
 from .daemon import DaemonClient, Client, DaemonError
 from .service import Sync
@@ -640,6 +641,74 @@ def first_icon(*names):
         if theme.has_icon(name):
             return name
     return names[-1]
+
+
+def setup_app_icon(window):
+    """Give a window a real application icon and a usable WM_CLASS.
+
+    GTK derives WM_CLASS from the program name, which for us is the .pyz
+    filename - the desktop then looks up an icon called 'aimless.pyz', finds
+    nothing, and the taskbar entry shows up blank or generic. Setting the
+    class to 'aimless' plus an icon the theme can actually resolve is what
+    puts a proper icon in the taskbar.
+    """
+    try:
+        window.set_wmclass("aimless", APP_NAME)
+    except Exception:
+        pass
+    try:
+        if appicon.has_icon():
+            window.set_icon_name(appicon.ICON_NAME)
+            window.set_default_icon_name(appicon.ICON_NAME)
+        else:
+            # No icon theme entry (first run before the icons are written, or
+            # a read-only home): fall back to a pixbuf, then to a theme icon.
+            pixbuf = appicon.render(48)
+            if pixbuf is not None:
+                window.set_default_icon(pixbuf)
+            else:
+                window.set_default_icon_name(
+                    first_icon("user-available-symbolic", "phone", "applications-internet"))
+    except Exception:
+        pass
+
+
+def setup_application_identity():
+    """Name the process and the application the way the desktop expects.
+
+    GTK takes WM_CLASS from the program name, which for us is the .pyz
+    filename. Windows we do not touch ourselves - the tray icon's own
+    window, the unlock dialog, message dialogs - would then be filed under
+    'aimless.pyz' and show up without an icon. Naming the process 'aimless'
+    fixes all of them at once.
+    """
+    try:
+        GLib.set_prgname("aimless")
+        GLib.set_application_name(APP_NAME)
+        # GDK derives the WM_CLASS class half from the program name; without
+        # this it stays 'Aimless.pyz' on windows we do not set explicitly.
+        Gdk.set_program_class(APP_NAME)
+    except Exception:
+        pass
+    try:
+        settings = Gtk.Settings.get_default()
+        if settings is not None and appicon.has_icon():
+            settings.set_property("gtk-application-icon-name", appicon.ICON_NAME)
+    except Exception:
+        pass
+
+
+def tray_icon_name(unread=False):
+    """Icon name for the tray: the app icon, badged when there are unread."""
+    name = appicon.icon_name(unread)
+    if appicon.has_icon(name):
+        return name
+    # No app icon in the theme (first run, or a read-only home). Fall back to
+    # theme icons - but keep the two states distinct whatever the theme has,
+    # otherwise the unread badge silently disappears.
+    if unread:
+        return first_icon("mail-unread-symbolic", "mail-message-new-symbolic")
+    return first_icon("user-available-symbolic", "phone")
 
 
 def scroll_to_bottom(scrolled):
@@ -2759,7 +2828,7 @@ class AimlessWindow(Gtk.Window):
         self.supervisor = supervisor
         self.app_ref = app_ref
         self.get_style_context().add_class("aimless-window")
-        self.set_default_icon_name(first_icon("user-available-symbolic", "phone", "applications-internet"))
+        setup_app_icon(self)
         self.prefs = load_prefs()
         self.set_default_size(self.prefs.get("window_width", 1008), self.prefs.get("window_height", 723))
         self.connect("delete-event", self.on_delete)
@@ -3600,12 +3669,7 @@ class AimlessWindow(Gtk.Window):
         self.set_title(f"{APP_NAME} ({n})" if n else APP_NAME)
         tray = getattr(self.app_ref, "tray", None) if self.app_ref else None
         if tray is not None and getattr(tray, "have_tray", False):
-            try:
-                tray.icon.set_tooltip_text(
-                    f"{APP_NAME} - {n} unread\nLeft-click to open Messages" if n
-                    else f"{APP_NAME} - running\nLeft-click to open Messages")
-            except Exception:
-                pass
+            tray.set_unread(n)
 
     def apply_theme(self, name):
         # AIMLESS_THEME is a session override and wins over the saved choice.
@@ -3979,7 +4043,7 @@ class TrayIcon:
         self.menu.show_all()
         try:
             self.icon = Gtk.StatusIcon()
-            self.icon.set_from_icon_name(first_icon("user-available-symbolic", "phone"))
+            self.icon.set_from_icon_name(tray_icon_name(False))
             self.icon.set_title(APP_NAME)
             self.icon.set_tooltip_text(f"{APP_NAME} - running\nLeft-click to open Messages")
             self.icon.connect("activate", self.on_open)
@@ -3988,6 +4052,22 @@ class TrayIcon:
             self.have_tray = True
         except Exception as e:
             app.log(f"tray icon unavailable ({e!r}) - running as a plain window app")
+
+    def set_unread(self, n):
+        """Show unread messages on the tray icon itself, not just the tooltip.
+
+        The tooltip alone is invisible until you hover, so a new message left
+        no trace on the icon. The badge variant makes it obvious at a glance.
+        """
+        if not self.have_tray:
+            return
+        try:
+            self.icon.set_from_icon_name(tray_icon_name(n > 0))
+            self.icon.set_tooltip_text(
+                f"{APP_NAME} - {n} unread\nLeft-click to open Messages" if n
+                else f"{APP_NAME} - running\nLeft-click to open Messages")
+        except Exception:
+            pass
 
     def is_embedded(self):
         """True only when a real system-tray host adopted the icon.
@@ -4033,6 +4113,7 @@ class ConnectWindow(Gtk.Window):
     def __init__(self, remote, on_quit):
         super().__init__(title=f"{APP_NAME} - connecting")
         self.get_style_context().add_class("aimless-window")
+        setup_app_icon(self)
         self.remote = remote or {}
         self._on_quit = on_quit
         self.set_default_size(460, -1)
@@ -4099,6 +4180,13 @@ class AimlessApp:
         self._connect_show = False
         self._connect_state = {"ssh": "connecting", "daemon": "waiting"}
         self.connect_window = None
+        # Put the app icon in the user's icon theme before anything asks for
+        # it - the tray looks the name up when it is created.
+        try:
+            appicon.install()
+        except Exception as e:
+            self.log(f"could not install the app icon: {e!r}")
+        setup_application_identity()
 
     def start(self, open_window):
         rc = self._setup(open_window)
@@ -4609,6 +4697,11 @@ def read_pid(path):
 def install_autostart():
     desktop_path = paths.autostart_path()
     autostart_dir = os.path.dirname(desktop_path)
+    # The entry points at our own icon, so make sure it is on disk first.
+    try:
+        appicon.install()
+    except Exception:
+        pass
 
     exec_line = None
     aimless_bin = shutil.which("aimless") or os.path.expanduser("~/.local/bin/aimless")
@@ -4630,7 +4723,7 @@ def install_autostart():
         "Name=AIMless\n"
         "Comment=AIMless tray + daemon - messages are received in the background\n"
         f"Exec={exec_line}\n"
-        "Icon=user-available\n"
+        f"Icon={appicon.ICON_NAME}\n"
         "Categories=Network;InstantMessaging;\n"
         "X-GNOME-Autostart-enabled=true\n"
         "X-XFCE-Autostart-Override=true\n"

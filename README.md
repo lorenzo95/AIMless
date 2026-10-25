@@ -70,7 +70,7 @@ Everything lives under one root - `~/.local/share/aimless` by default, or `$AIML
 └── run/       app.pid · aimlessd.pid · tunnel.pid
 ```
 
-The only thing outside the root is the login autostart entry (`~/.config/autostart/aimless-tray.desktop`), which the desktop spec pins there.
+Two things live outside the root: the login autostart entry (`~/.config/autostart/aimless-tray.desktop`), which the desktop spec pins there, and the app icon (`~/.local/share/icons/hicolor/*/apps/aimless*.png`), which has to sit in the icon theme for the taskbar and the desktop shell to find it. The icon is drawn at startup and only rewritten when it changes.
 
 > **Upgrading from an older version?** This release changed the on-disk layout; old files are not migrated. To keep your identity, **export a backup first** (Keys & Identity → *Export encrypted backup*) or copy `identity.json`/`node.key`/`client-contacts.json` by hand, then use **Import backup…** on the first-run screen. Message history and attachments are not preserved by the backup.
 
@@ -117,7 +117,7 @@ Header menu → **Preferences …** (stored as `client/prefs.json` under the dat
 - **Enter to send**, **24h/12h timestamps**.
 - **Theme** - System (follows desktop light/dark live), Aimless Dark, Mocha, Nord, Tokyo Night, Latte, Dawn, plus **Matrix** and **Amber CRT** (monospace). `AIMLESS_THEME` overrides.
 
-The window title and tray tooltip show total unread. Sent text shows a delivered tick; files show per-recipient progress (`1/3 delivered` → `Delivered ✓`).
+The window title and the tray tooltip show the total unread, and the tray icon itself gets a red badge while anything is unread - so a new message is visible without hovering. Sent text shows a delivered tick; files show per-recipient progress (`1/3 delivered` → `Delivered ✓`).
 
 ### Keys & identity
 Header menu → **Keys & Identity …**:

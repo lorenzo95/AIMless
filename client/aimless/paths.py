@@ -8,8 +8,9 @@ Everything lives under one root (``AIMLESS_HOME``, default
     <root>/logs/     app.log, daemon.log, tunnel.log
     <root>/run/      pid files
 
-The one exception is the freedesktop autostart entry, which the spec pins to
-``$XDG_CONFIG_HOME/autostart``.
+The exceptions are the freedesktop autostart entry, which the spec pins to
+``$XDG_CONFIG_HOME/autostart``, and the app icon, which has to sit in the
+user icon theme (``$XDG_DATA_HOME/icons``) for the taskbar to find it.
 """
 
 import os

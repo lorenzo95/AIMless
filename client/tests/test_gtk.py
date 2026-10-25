@@ -1762,6 +1762,133 @@ def test_unread_indicator_title(gtk_app):
     assert "(" not in win.get_title()
 
 
+def test_tray_icon_marks_unread(gtk_app):
+    """The tray icon itself has to show that a message is unread.
+
+    Only the tooltip used to change, which is invisible until you hover, so
+    a new message left no trace on the icon."""
+    tray = gtkui.TrayIcon.__new__(gtkui.TrayIcon)
+    tray.app = None
+    tray.have_tray = True
+    tray.icon = Gtk.StatusIcon()
+
+    tray.set_unread(0)
+    plain = tray.icon.get_icon_name()
+    tray.set_unread(2)
+    unread = tray.icon.get_icon_name()
+    assert plain != unread, "the tray icon must change when a message is unread"
+    assert "unread" in unread, f"expected the badged icon, got {unread!r}"
+    assert "2 unread" in tray.icon.get_tooltip_text()
+
+    tray.set_unread(0)
+    assert tray.icon.get_icon_name() == plain, "the icon must go back when read"
+    assert "unread" not in tray.icon.get_tooltip_text()
+
+
+def test_unread_indicator_drives_the_tray_icon(gtk_app):
+    """A message arriving has to reach the tray icon, not just the title."""
+    win = gtk_app["win"]
+
+    class _StubTray:
+        have_tray = True
+
+        def __init__(self):
+            self.unread = None
+
+        def set_unread(self, n):
+            self.unread = n
+
+    tray = _StubTray()
+
+    class _StubApp:
+        pass
+
+    app = _StubApp()
+    app.tray = tray
+    win.app_ref = app
+    win.messages.threads["x"] = {"unread": 4}
+    win.refresh_unread_indicator()
+    assert tray.unread == 4, "the tray icon was not told about the unread message"
+    win.messages.threads["x"]["unread"] = 0
+    win.refresh_unread_indicator()
+    assert tray.unread == 0
+    win.app_ref = None
+
+
+def test_window_advertises_app_icon_and_wmclass(gtk_app, tmp_path, monkeypatch):
+    """The taskbar entry needs a real icon and a matching WM_CLASS.
+
+    GTK otherwise derives WM_CLASS from the .pyz filename, so the desktop
+    looks up an icon called 'aimless.pyz', finds nothing, and the taskbar
+    entry comes up blank."""
+    from aimless import appicon
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdgdata"))
+    appicon.install()
+    appicon.register()
+
+    assert appicon.has_icon(appicon.ICON_NAME)
+    assert appicon.has_icon(appicon.UNREAD_ICON_NAME)
+
+    # A fresh window: WM_CLASS has to be set before the window is realized.
+    probe = Gtk.Window(title="probe")
+    gtkui.setup_app_icon(probe)
+    assert probe.get_icon_name() == appicon.ICON_NAME
+    probe.destroy()
+
+
+def test_setup_app_icon_falls_back_without_theme_entries(gtk_app, tmp_path, monkeypatch):
+    """With no icon in the theme the window must still get an icon rather
+    than silently ending up with none."""
+    from aimless import appicon
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "empty-xdg"))
+    appicon.register()
+
+    probe = Gtk.Window(title="probe")
+    gtkui.setup_app_icon(probe)
+    # Either a pixbuf was set, or an icon name that the theme can resolve.
+    assert probe.get_icon_name() is not None or probe.get_icon() is not None
+    probe.destroy()
+
+
+def test_application_identity_names_the_process(gtk_app):
+    """Windows we never touch ourselves - the tray icon's own window, the
+    unlock dialog - still need WM_CLASS 'aimless'. GTK takes it from the
+    program name, which is otherwise the .pyz filename."""
+    gtkui.setup_application_identity()
+    assert GLib.get_prgname() == "aimless"
+    assert Gdk.get_program_class() == "AIMless"
+
+
+def test_app_icon_is_drawn_at_every_size():
+    """The icon has to render, not just exist as a name - a broken pixbuf
+    would leave the taskbar blank again."""
+    from aimless import appicon
+
+    if appicon._imports()[0] is None:
+        pytest.skip("cairo is not available")
+    for size in (16, 24, 48):
+        for unread in (False, True):
+            pixbuf = appicon.render(size, unread)
+            assert pixbuf is not None
+            assert pixbuf.get_width() == size
+            assert pixbuf.get_height() == size
+            assert pixbuf.get_n_channels() == 4, "the icon needs an alpha channel"
+
+
+def test_app_icon_unread_variant_differs():
+    """The unread variant must be visibly different from the plain one."""
+    from aimless import appicon
+
+    if appicon._imports()[0] is None:
+        pytest.skip("cairo is not available")
+    plain = appicon.render(32, False).save_to_bufferv("png", [], [])[1]
+    unread = appicon.render(32, True).save_to_bufferv("png", [], [])[1]
+    assert plain != unread, "the unread badge is not being drawn"
+
+
+
 def test_outgoing_text_delivery_tick(gtk_app):
     win = gtk_app["win"]
     m = win.messages
