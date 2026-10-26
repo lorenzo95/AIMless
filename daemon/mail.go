@@ -51,14 +51,82 @@ type Mail struct {
 	retryInterval time.Duration
 	boxes         map[string]*Mailbox
 	blocked       map[string]struct{}
-	node          *Node
 	probeSeq      uint64
 
-	Presence *Presence
+	// Shared with the node's read loop: the node is already running when
+	// these are installed, so they are read under a lock. Without it the
+	// race detector flags every packet that arrives during startup.
+	shared        sync.RWMutex
+	node          *Node
+	presence      *Presence
+	onDeliver     func(from ed25519.PublicKey, seq uint64, ts int64, payload []byte)
+	onDeliverFile func(from ed25519.PublicKey, seq uint64, ts int64, payload []byte)
+	onAcked       func(to ed25519.PublicKey, seq uint64)
+}
 
-	OnDeliver     func(from ed25519.PublicKey, seq uint64, ts int64, payload []byte)
-	OnDeliverFile func(from ed25519.PublicKey, seq uint64, ts int64, payload []byte)
-	OnAcked       func(to ed25519.PublicKey, seq uint64)
+// SetNode attaches the node the daemon sends through.
+func (m *Mail) SetNode(node *Node) {
+	m.shared.Lock()
+	m.node = node
+	m.shared.Unlock()
+}
+
+// SetPresence installs the presence tracker.
+func (m *Mail) SetPresence(p *Presence) {
+	m.shared.Lock()
+	m.presence = p
+	m.shared.Unlock()
+}
+
+// SetOnDeliver installs the callback for a delivered text message.
+func (m *Mail) SetOnDeliver(f func(from ed25519.PublicKey, seq uint64, ts int64, payload []byte)) {
+	m.shared.Lock()
+	m.onDeliver = f
+	m.shared.Unlock()
+}
+
+// SetOnDeliverFile installs the callback for a delivered file chunk.
+func (m *Mail) SetOnDeliverFile(f func(from ed25519.PublicKey, seq uint64, ts int64, payload []byte)) {
+	m.shared.Lock()
+	m.onDeliverFile = f
+	m.shared.Unlock()
+}
+
+// SetOnAcked installs the callback for an acknowledged message.
+func (m *Mail) SetOnAcked(f func(to ed25519.PublicKey, seq uint64)) {
+	m.shared.Lock()
+	m.onAcked = f
+	m.shared.Unlock()
+}
+
+func (m *Mail) nodeRef() *Node {
+	m.shared.RLock()
+	defer m.shared.RUnlock()
+	return m.node
+}
+
+func (m *Mail) presenceRef() *Presence {
+	m.shared.RLock()
+	defer m.shared.RUnlock()
+	return m.presence
+}
+
+func (m *Mail) deliverHandler() func(ed25519.PublicKey, uint64, int64, []byte) {
+	m.shared.RLock()
+	defer m.shared.RUnlock()
+	return m.onDeliver
+}
+
+func (m *Mail) deliverFileHandler() func(ed25519.PublicKey, uint64, int64, []byte) {
+	m.shared.RLock()
+	defer m.shared.RUnlock()
+	return m.onDeliverFile
+}
+
+func (m *Mail) ackedHandler() func(ed25519.PublicKey, uint64) {
+	m.shared.RLock()
+	defer m.shared.RUnlock()
+	return m.onAcked
 }
 
 func NewMail(datadir string, inboxCapacity int, attachCap int64, retryInterval time.Duration) (*Mail, error) {
@@ -241,8 +309,8 @@ func (m *Mail) Watch(pub ed25519.PublicKey) error {
 	}
 	for _, c := range contacts {
 		if c == peerHex {
-			if m.Presence != nil {
-				m.Presence.Watch(pub)
+			if p := m.presenceRef(); p != nil {
+				p.Watch(pub)
 			}
 			return nil
 		}
@@ -259,14 +327,14 @@ func (m *Mail) Watch(pub ed25519.PublicKey) error {
 	if err := os.Rename(tmp, m.contactsPath()); err != nil {
 		return err
 	}
-	if m.Presence != nil {
-		m.Presence.Watch(pub)
+	if p := m.presenceRef(); p != nil {
+		p.Watch(pub)
 	}
 	return nil
 }
 
 func (m *Mail) Attach(node *Node) {
-	m.node = node
+	m.SetNode(node)
 	go m.retryLoop()
 }
 
@@ -364,10 +432,14 @@ func (m *Mail) HandlePacket(from ed25519.PublicKey, payload []byte) {
 			return
 		}
 		if ackBytes, err := encodeAck(env.Seq); err == nil {
-			_, _ = m.node.Send(from, ackBytes)
+			if n := m.nodeRef(); n != nil {
+				_, _ = n.Send(from, ackBytes)
+			}
 		}
-		if isNew && m.OnDeliverFile != nil {
-			m.OnDeliverFile(from, env.Seq, env.Ts, env.Payload)
+		if isNew {
+			if h := m.deliverFileHandler(); h != nil {
+				h(from, env.Seq, env.Ts, env.Payload)
+			}
 		}
 	case TypeMsg:
 		isNew, err := box.inbox.Add(env.Seq, env.Ts, env.Payload)
@@ -375,31 +447,37 @@ func (m *Mail) HandlePacket(from ed25519.PublicKey, payload []byte) {
 			return
 		}
 		if ackBytes, err := encodeAck(env.Seq); err == nil {
-			_, _ = m.node.Send(from, ackBytes)
+			if n := m.nodeRef(); n != nil {
+				_, _ = n.Send(from, ackBytes)
+			}
 		}
-		if isNew && m.OnDeliver != nil {
-			m.OnDeliver(from, env.Seq, env.Ts, env.Payload)
+		if isNew {
+			if h := m.deliverHandler(); h != nil {
+				h(from, env.Seq, env.Ts, env.Payload)
+			}
 		}
 	case TypeAck:
 		removed, err := box.journal.Ack(env.Seq)
-		if err == nil && removed && m.OnAcked != nil {
-			m.OnAcked(from, env.Seq)
+		if err == nil && removed {
+			if h := m.ackedHandler(); h != nil {
+				h(from, env.Seq)
+			}
 		}
 	case TypeProbe:
-		if m.Presence != nil {
-			m.Presence.OnProbe(from, env.Seq)
+		if p := m.presenceRef(); p != nil {
+			p.OnProbe(from, env.Seq)
 		}
 	case TypeStatus:
-		if m.Presence != nil {
-			m.Presence.OnStatus(from, env.Seq, env.Ts, env.Payload)
+		if p := m.presenceRef(); p != nil {
+			p.OnStatus(from, env.Seq, env.Ts, env.Payload)
 		}
 	}
 }
 
 func (m *Mail) PathUp(key ed25519.PublicKey) {
 	m.flushPub(key)
-	if m.Presence != nil {
-		m.Presence.PathUp(key)
+	if p := m.presenceRef(); p != nil {
+		p.PathUp(key)
 	}
 }
 
@@ -431,7 +509,11 @@ func (m *Mail) SendProbe(to ed25519.PublicKey) error {
 	if err != nil {
 		return err
 	}
-	_, err = m.node.Send(to, data)
+	n := m.nodeRef()
+	if n == nil {
+		return fmt.Errorf("daemon has no node")
+	}
+	_, err = n.Send(to, data)
 	return err
 }
 
@@ -441,7 +523,11 @@ func (m *Mail) SendStatus(to ed25519.PublicKey, seq uint64, payload []byte) erro
 	if err != nil {
 		return err
 	}
-	_, err = m.node.Send(to, data)
+	n := m.nodeRef()
+	if n == nil {
+		return fmt.Errorf("daemon has no node")
+	}
+	_, err = n.Send(to, data)
 	return err
 }
 
@@ -456,7 +542,8 @@ func (m *Mail) flushPeer(peerHex string) {
 	m.mu.Lock()
 	box, ok := m.boxes[peerHex]
 	m.mu.Unlock()
-	if !ok || m.node == nil {
+	node := m.nodeRef()
+	if !ok || node == nil {
 		return
 	}
 	// node.Send blocks on session flow control; coalesce concurrent flushes so a
@@ -490,9 +577,9 @@ func (m *Mail) flushPeer(peerHex string) {
 		}
 		var sendErr error
 		if entry.Type == TypeFile {
-			_, sendErr = m.node.SendBulk(pub, data)
+			_, sendErr = node.SendBulk(pub, data)
 		} else {
-			_, sendErr = m.node.Send(pub, data)
+			_, sendErr = node.Send(pub, data)
 		}
 		// SentAt means "last successfully enqueued" - a chunk that bounced off a
 		// full queue must stay eligible for the very next tick instead of being

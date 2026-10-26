@@ -51,6 +51,8 @@ chmod +x aimlessd-linux-amd64 aimless.pyz
 
 Requires Linux, `python3` with `pynacl`, and the GTK stack (`python3-gi`, `gir1.2-gtk-3.0`). The daemon (`aimlessd`) is a static binary with no dependencies. If an old pip-installed client exists, remove it first (`pip uninstall aimless-client`).
 
+The taskbar and tray icon is drawn with cairo, so `python3-cairo` (or `pip install aimless-client[gui]`) is needed for the running-man icon. Without it the app still runs, but the taskbar falls back to a generic icon and the app log says so.
+
 The autostart entry runs `aimless tray` at login, and a login entry fires *before* the panel is up - so the app waits up to 15 seconds for a tray host to adopt its icon before it decides there is no tray. Without that wait it used to exit immediately, and the tray never came up after a reboot. `aimless autostart` (re)writes the entry; check it with `cat ~/.config/autostart/aimless-tray.desktop` if the tray is missing after a login.
 
 The autostarted app is **locked** - it starts without asking for your passphrase. It still tells you when a message arrives (badge, tooltip and a notification), it just cannot read it until you click the tray icon and unlock.

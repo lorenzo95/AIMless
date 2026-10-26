@@ -172,6 +172,31 @@ def room_id(member_nodes) -> str:
     return hashlib.sha256("|".join(sorted(member_nodes)).encode("utf-8")).hexdigest()
 
 
+def valid_room_members(conv, members):
+    """The roster of a room message, but only if it really describes ``conv``.
+
+    A room id is the hash of its member set, so a roster that does not hash
+    to the id is talking about a different conversation. Trusting it anyway
+    would let a peer rewrite the roster of a room we are in: our replies are
+    sealed to the roster we stored, so the peer who rewrote it would receive
+    them.
+
+    Returns the roster as ``{node: member}`` or None when it does not check
+    out.
+    """
+    if not conv or not members:
+        return None
+    try:
+        nodes = [m["node"] for m in members]
+    except (KeyError, TypeError):
+        return None
+    if not all(isinstance(n, str) and n for n in nodes):
+        return None
+    if room_id(nodes) != conv:
+        return None
+    return {m["node"]: m for m in members}
+
+
 def seal_message(
     identity: nacl.signing.SigningKey, buddy_pubkey_hex: str, text: str, ts: int,
     screen: str = None, conv: str = None, members=None,

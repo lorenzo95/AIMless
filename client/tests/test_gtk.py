@@ -3002,3 +3002,137 @@ def test_sidebar_away_tooltip(gtk_app):
     # no away -> no tooltip
     win.messages.refresh_presence({node: {"online": True, "client_attached": True}})
     assert win.messages.threads[node]["row"].get_tooltip_text() is None
+
+
+# -- a peer cannot choose where we write files, or who we talk to ---------
+
+def test_safe_conv_id_only_accepts_hex_ids():
+    """A conversation id becomes a directory name, so it must never be able
+    to escape the attachments directory."""
+    node = "ab" * 32
+    assert gtkui.safe_conv_id(node) == node
+    assert gtkui.safe_conv_id("../../.config/autostart") is None
+    assert gtkui.safe_conv_id("../../.config/autostart", node) == node
+    assert gtkui.safe_conv_id("", node) == node
+    assert gtkui.safe_conv_id("../../etc", "../../elsewhere") is None
+    assert gtkui.safe_conv_id("/etc/passwd") is None
+    assert gtkui.safe_conv_id("a" * 63) is None
+
+
+def test_attachment_cannot_be_written_outside_the_attachments_dir(gtk_app):
+    """The sender picks the conversation id in a file chunk. An id that
+    traverses out of the attachments directory must be refused."""
+    win = gtk_app["win"]
+    msg = win.messages
+    home = gtkui.paths.client_dir()
+
+    with pytest.raises(ValueError):
+        msg._store_attachment("../../.config/autostart", "aa" * 16, "x.desktop", b"payload")
+
+    assert not os.path.exists(os.path.join(home, ".config")), \
+        "a file escaped the attachments dir"
+
+
+def test_attachment_conversation_id_falls_back_to_the_sender(gtk_app):
+    """A file chunk with an unusable id is filed under the sender's node."""
+    win = gtk_app["win"]
+    node = "cd" * 32
+    assert gtkui.safe_conv_id(None, node) == node
+    assert gtkui.safe_conv_id("../../x", node) == node
+
+
+def test_a_peer_cannot_replace_the_roster_of_a_room_we_are_in(gtk_app):
+    """The roster decides who our replies are sealed to. A peer that claims
+    our room with a different roster must not be able to change it."""
+    win = gtk_app["win"]
+    session = win.session
+    bob = gtk_app["bob"]
+    a_node = gtk_app["a_node"]
+    b_node = gtk_app["b_node"]
+
+    members = {
+        session.self_node: {"node": session.self_node,
+                            "pubkey": session.client.pubkey_hex, "screen": "Alice"},
+        b_node: {"node": b_node, "pubkey": bytes(bob.identity.verify_key).hex(),
+                 "screen": "Bob"},
+    }
+    conv = protocol.room_id(sorted(members))
+    session.cache.ensure_room(conv, members)
+
+    # Bob sends a message claiming our room with a roster that includes Eve.
+    eve_identity = crypto.new_identity()
+    eve = {"node": "ee" * 32, "pubkey": bytes(eve_identity.verify_key).hex(),
+           "screen": "Eve"}
+    fake_roster = [
+        {"node": a_node, "pubkey": session.client.pubkey_hex, "screen": "Alice"},
+        eve,
+    ]
+    bob.send_room(fake_roster, conv, "hello room", int(time.time() * 1000))
+
+    def stored():
+        return len(session.cache.messages(conv)) > 0
+
+    assert _pump(win, stored, timeout=30), "the room message never arrived"
+
+    assert set(session.cache.members(conv)) == set(members), \
+        "the roster of our room was rewritten by a peer"
+
+
+def test_a_stranger_cannot_add_a_room_to_our_sidebar(gtk_app, monkeypatch):
+    """A room message from somebody we do not know stays a request - it must
+    not show up as a room of ours."""
+    win = gtk_app["win"]
+    session = win.session
+    bob = gtk_app["bob"]
+    a_node = gtk_app["a_node"]
+    # The request dialog is modal: answer it instead of blocking on it.
+    monkeypatch.setattr(win, "_ask_request", lambda r: Gtk.ResponseType.REJECT)
+
+    # Bob is a contact in this fixture; take him out of the roster so his
+    # message counts as a stranger's.
+    contacts = protocol.load_contacts(gtkui.paths.contacts_path())
+    contacts.pop("bob", None)
+    protocol.save_contacts(gtkui.paths.contacts_path(), contacts)
+
+    eve_identity = crypto.new_identity()
+    strangers = [{"node": a_node, "pubkey": session.client.pubkey_hex, "screen": "Alice"},
+                 {"node": "ee" * 32, "pubkey": bytes(eve_identity.verify_key).hex(),
+                  "screen": "Eve"}]
+    conv = protocol.room_id([s["node"] for s in strangers])
+    bob.send_room(strangers, conv, "join my room", int(time.time() * 1000))
+
+    def arrived():
+        return len(session.client.history(bob.node_key(), 0).get("msgs", [])) > 0
+
+    assert _pump(win, arrived, timeout=30), "the message never reached the daemon"
+    pump(3.0)  # give the client time to process the event
+
+    assert conv not in session.cache.rooms(), \
+        "a stranger added a room to our sidebar"
+
+
+def test_the_catchup_sweeps_do_not_cancel_each_other(gtk_app):
+    """The text sweep and the attachment sweep used to share one busy flag,
+    so a slow text sweep silently skipped the attachment sweep for good."""
+    win = gtk_app["win"]
+    msg = win.messages
+
+    msg._catchup_busy = True          # the text sweep is in flight
+    assert msg.catchup_attachments() is True, "the attachment sweep was skipped"
+    assert msg.catchup_unread() is False, "a busy sweep must say so"
+
+    msg._catchup_busy = False
+    msg._catchup_attachments_busy = True
+    assert msg.catchup_attachments() is False
+
+
+def test_the_catchup_timer_retries_until_the_sweep_runs(gtk_app):
+    win = gtk_app["win"]
+    win.messages._catchup_attachments_busy = True
+    assert win._catchup_attachments_once() == GLib.SOURCE_CONTINUE, \
+        "the attachment sweep was consumed without running"
+    win.messages._catchup_attachments_busy = False
+
+    win.messages._catchup_busy = True
+    assert win._catchup_once() == GLib.SOURCE_CONTINUE
+    win.messages._catchup_busy = False

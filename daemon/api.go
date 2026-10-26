@@ -11,9 +11,10 @@ import (
 	"net"
 	"os"
 	"sync"
+	"time"
 )
 
-const buildVersion = "aimlessd/0.9.6"
+const buildVersion = "aimlessd/0.9.7"
 
 // protocolVersion identifies the wire format spoken to other daemons. Peers on a
 // different version are ignored rather than misparsed; there is no compat layer.
@@ -61,13 +62,32 @@ type apiMessage struct {
 	Tid       string          `json:"tid,omitempty"`
 }
 
+// apiConn is one client connection.
+//
+// Writes go through its own mutex so that two broadcasts can never interleave
+// on the same connection (the client reads line-delimited JSON), and so a
+// client that stopped reading cannot block the other clients: the write has a
+// deadline, and the server lock is not held while writing.
+type apiConn struct {
+	net.Conn
+	wmu sync.Mutex
+}
+
+// write sends one line to the client.
+func (c *apiConn) write(data []byte) {
+	c.wmu.Lock()
+	defer c.wmu.Unlock()
+	_ = c.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	_, _ = c.Write(data)
+}
+
 type APIServer struct {
 	node     *Node
 	mail     *Mail
 	presence *Presence
 	ln       net.Listener
 	mu       sync.Mutex
-	conns    map[net.Conn]struct{}
+	conns    map[*apiConn]struct{}
 	closed   bool
 }
 
@@ -83,7 +103,7 @@ func NewAPIServer(node *Node, mail *Mail, presence *Presence, socketPath string)
 		ln.Close()
 		return nil, fmt.Errorf("chmod socket: %w", err)
 	}
-	s := &APIServer{node: node, mail: mail, presence: presence, ln: ln, conns: make(map[net.Conn]struct{})}
+	s := &APIServer{node: node, mail: mail, presence: presence, ln: ln, conns: make(map[*apiConn]struct{})}
 	go s.acceptLoop()
 	return s, nil
 }
@@ -100,13 +120,14 @@ func (s *APIServer) acceptLoop() {
 			s.mu.Unlock()
 			return
 		}
-		s.conns[conn] = struct{}{}
+		client := &apiConn{Conn: conn}
+		s.conns[client] = struct{}{}
 		s.mu.Unlock()
-		go s.handleConn(conn)
+		go s.handleConn(client)
 	}
 }
 
-func (s *APIServer) handleConn(conn net.Conn) {
+func (s *APIServer) handleConn(conn *apiConn) {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("recovered in connection handler: %v", r)
@@ -132,7 +153,7 @@ func (s *APIServer) handleConn(conn net.Conn) {
 	}
 }
 
-func (s *APIServer) dispatch(conn net.Conn, req apiMessage) {
+func (s *APIServer) dispatch(conn *apiConn, req apiMessage) {
 	// Any client request counts as a heartbeat: presence only advertises a
 	// client while one has been seen recently.
 	if s.presence != nil {
@@ -193,7 +214,7 @@ func (s *APIServer) dispatch(conn net.Conn, req apiMessage) {
 	}
 }
 
-func (s *APIServer) handleSend(conn net.Conn, req apiMessage, typ ...EnvelopeType) {
+func (s *APIServer) handleSend(conn *apiConn, req apiMessage, typ ...EnvelopeType) {
 	keyBytes, err := hex.DecodeString(req.To)
 	if err != nil {
 		s.replyReq(conn, req, apiMessage{Op: "error", Error: "bad key hex: " + err.Error()})
@@ -221,7 +242,7 @@ func (s *APIServer) handleSend(conn net.Conn, req apiMessage, typ ...EnvelopeTyp
 	s.replyReq(conn, req, apiMessage{Op: "queued", To: req.To, Seq: seq, Bytes: len(payload)})
 }
 
-func (s *APIServer) handlePendingAttachments(conn net.Conn, req apiMessage) {
+func (s *APIServer) handlePendingAttachments(conn *apiConn, req apiMessage) {
 	keyBytes, err := hex.DecodeString(req.From)
 	if err != nil || len(keyBytes) != ed25519.PublicKeySize {
 		s.replyReq(conn, req, apiMessage{Op: "error", Error: "bad from key"})
@@ -235,7 +256,7 @@ func (s *APIServer) handlePendingAttachments(conn net.Conn, req apiMessage) {
 	s.replyReq(conn, req, apiMessage{Op: "pendingattachments", From: req.From, Transfers: transfers})
 }
 
-func (s *APIServer) handleFetchAttachment(conn net.Conn, req apiMessage) {
+func (s *APIServer) handleFetchAttachment(conn *apiConn, req apiMessage) {
 	keyBytes, err := hex.DecodeString(req.From)
 	if err != nil || len(keyBytes) != ed25519.PublicKeySize {
 		s.replyReq(conn, req, apiMessage{Op: "error", Error: "bad from key"})
@@ -253,7 +274,7 @@ func (s *APIServer) handleFetchAttachment(conn net.Conn, req apiMessage) {
 	s.replyReq(conn, req, apiMessage{Op: "fetchattachment", From: req.From, Tid: req.Tid, Chunks: chunks})
 }
 
-func (s *APIServer) handleAckFile(conn net.Conn, req apiMessage) {
+func (s *APIServer) handleAckFile(conn *apiConn, req apiMessage) {
 	keyBytes, err := hex.DecodeString(req.From)
 	if err != nil || len(keyBytes) != ed25519.PublicKeySize {
 		s.replyReq(conn, req, apiMessage{Op: "error", Error: "bad from key"})
@@ -270,7 +291,7 @@ func (s *APIServer) handleAckFile(conn net.Conn, req apiMessage) {
 	s.replyReq(conn, req, apiMessage{Op: "ackfile", From: req.From, Tid: req.Tid})
 }
 
-func (s *APIServer) handleHistory(conn net.Conn, req apiMessage) {
+func (s *APIServer) handleHistory(conn *apiConn, req apiMessage) {
 	keyBytes, err := hex.DecodeString(req.From)
 	if err != nil {
 		s.replyReq(conn, req, apiMessage{Op: "error", Error: "bad key hex: " + err.Error()})
@@ -292,7 +313,7 @@ func (s *APIServer) handleHistory(conn net.Conn, req apiMessage) {
 	s.replyReq(conn, req, apiMessage{Op: "history", From: req.From, Msgs: out, Oldest: oldest, Latest: latest})
 }
 
-func (s *APIServer) handleWatch(conn net.Conn, req apiMessage) {
+func (s *APIServer) handleWatch(conn *apiConn, req apiMessage) {
 	keyBytes, err := hex.DecodeString(req.To)
 	if err != nil {
 		s.replyReq(conn, req, apiMessage{Op: "error", Error: "bad key hex: " + err.Error()})
@@ -309,7 +330,7 @@ func (s *APIServer) handleWatch(conn net.Conn, req apiMessage) {
 	s.replyReq(conn, req, apiMessage{Op: "watching", To: req.To})
 }
 
-func (s *APIServer) handleSetStatus(conn net.Conn, req apiMessage) {
+func (s *APIServer) handleSetStatus(conn *apiConn, req apiMessage) {
 	keyBytes, err := hex.DecodeString(req.To)
 	if err != nil {
 		s.replyReq(conn, req, apiMessage{Op: "error", Error: "bad key hex: " + err.Error()})
@@ -336,7 +357,7 @@ func (s *APIServer) handleSetStatus(conn net.Conn, req apiMessage) {
 	s.replyReq(conn, req, apiMessage{Op: "statusset", To: req.To, Seq: seq})
 }
 
-func (s *APIServer) handleBlock(conn net.Conn, req apiMessage, block bool) {
+func (s *APIServer) handleBlock(conn *apiConn, req apiMessage, block bool) {
 	keyBytes, err := hex.DecodeString(req.To)
 	if err != nil {
 		s.replyReq(conn, req, apiMessage{Op: "error", Error: "bad key hex: " + err.Error()})
@@ -365,18 +386,18 @@ func (s *APIServer) handleBlock(conn net.Conn, req apiMessage, block bool) {
 	}
 }
 
-func (s *APIServer) reply(conn net.Conn, msg apiMessage) {
+func (s *APIServer) reply(conn *apiConn, msg apiMessage) {
 	data, err := json.Marshal(msg)
 	if err != nil {
 		return
 	}
-	conn.Write(append(data, '\n'))
+	conn.write(append(data, '\n'))
 }
 
 // replyReq echoes the request's correlation id back on the reply (and on error
 // replies) so a multiplexing client can match the response to its request.
 // Events (recv/acked) are broadcast separately and never carry ids.
-func (s *APIServer) replyReq(conn net.Conn, req apiMessage, msg apiMessage) {
+func (s *APIServer) replyReq(conn *apiConn, req apiMessage, msg apiMessage) {
 	msg.Id = req.Id
 	s.reply(conn, msg)
 }
@@ -416,13 +437,21 @@ func (s *APIServer) broadcast(msg apiMessage) {
 		return
 	}
 	data = append(data, '\n')
+	// Snapshot the connections under the lock, then write outside it: a
+	// client that stopped reading must not block every other client (and
+	// must not hold the server lock while it blocks).
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.closed {
+		s.mu.Unlock()
 		return
 	}
+	conns := make([]*apiConn, 0, len(s.conns))
 	for conn := range s.conns {
-		conn.Write(data)
+		conns = append(conns, conn)
+	}
+	s.mu.Unlock()
+	for _, conn := range conns {
+		conn.write(data)
 	}
 }
 
@@ -433,11 +462,11 @@ func (s *APIServer) Close() error {
 		return nil
 	}
 	s.closed = true
-	conns := make([]net.Conn, 0, len(s.conns))
+	conns := make([]*apiConn, 0, len(s.conns))
 	for conn := range s.conns {
 		conns = append(conns, conn)
 	}
-	s.conns = make(map[net.Conn]struct{})
+	s.conns = make(map[*apiConn]struct{})
 	s.mu.Unlock()
 	for _, conn := range conns {
 		conn.Close()

@@ -135,11 +135,13 @@ func run(datadir, apiPath, peersFlag, listenFlag string, retryInterval, probeInt
 		return err
 	}
 	defer mail.Close()
-	node.OnPacket = mail.HandlePacket
-	node.OnPathUp = mail.PathUp
+	// Order matters: the node's read loop is already running, so a packet can
+	// arrive at any moment. Everything the packet handler touches has to be
+	// in place *before* the handler is wired up, or the first packet finds a
+	// half-built mail (a nil node, no presence).
 	mail.Attach(node)
-
 	presence := NewPresence(mail, probeInterval)
+	node.SetHandlers(mail.HandlePacket, mail.PathUp)
 	presence.Start()
 
 	if apiPath == "" {
@@ -150,9 +152,9 @@ func run(datadir, apiPath, peersFlag, listenFlag string, retryInterval, probeInt
 		return err
 	}
 	defer api.Close()
-	mail.OnDeliver = api.DeliverMsg
-	mail.OnDeliverFile = api.DeliverFileMsg
-	mail.OnAcked = api.Acked
+	mail.SetOnDeliver(api.DeliverMsg)
+	mail.SetOnDeliverFile(api.DeliverFileMsg)
+	mail.SetOnAcked(api.Acked)
 
 	fmt.Printf("aimlessd %s\n", buildVersion)
 	fmt.Printf("  address: %s\n", node.Address.String())

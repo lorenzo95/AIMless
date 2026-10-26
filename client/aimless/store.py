@@ -146,10 +146,20 @@ class Store:
             (conv, 1 if dm else 0, self._enc("{}")))
 
     def ensure_room(self, conv: str, members: dict) -> None:
+        """Create a room conversation.
+
+        An existing roster is never overwritten. The roster decides who our
+        replies are sealed to, so a peer must not be able to replace it - an
+        inbound message that carries a different roster is talking about a
+        different conversation, and the protocol already hashes the member
+        set into the conversation id (protocol.valid_room_members).
+
+        A dismissed room is un-hidden again: a new message re-opens it.
+        """
         with self._lock:
             self.conn.execute(
                 "INSERT INTO conversations(id, dm, members, hidden) VALUES(?, 0, ?, 0) "
-                "ON CONFLICT(id) DO UPDATE SET dm=0, members=excluded.members, hidden=0",
+                "ON CONFLICT(id) DO UPDATE SET hidden=0",
                 (conv, self._enc(json.dumps(members))))
             self.conn.commit()
 

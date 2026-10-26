@@ -1,6 +1,6 @@
 [project]
 name = "aimless-client"
-version = "0.7.6"
+version = "0.9.15"
 description = "aimless - serverless instant messaging over the Yggdrasil overlay network"
 requires-python = ">=3.10"
 dependencies = ["pynacl>=1.5"]
@@ -16,4 +16,7 @@ build-backend = "setuptools.build_meta"
 packages = ["aimless"]
 
 [project.optional-dependencies]
+# The tray/taskbar icon is drawn with cairo. Without it the app still runs,
+# but the taskbar falls back to a generic icon - so it is worth declaring.
+gui = ["pycairo>=1.20"]
 dev = ["pytest>=8"]

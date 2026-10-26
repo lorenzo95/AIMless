@@ -1,2 +1,0 @@
-[console_scripts]
-aimless = aimless.cli:main

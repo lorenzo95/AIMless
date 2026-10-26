@@ -65,6 +65,32 @@ def sanitize_filename(name):
     return clean[:64]
 
 
+# A conversation id ends up as a directory name for attachments, so it has to
+# be something we can put on disk without thinking about it. Legitimate ids
+# are hex: a node key (a DM) or the sha256 of the member set (a room).
+_CONV_ID_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+def safe_conv_id(conv, fallback=None):
+    """Return a conversation id that is safe to use as a path component.
+
+    A peer chooses the ``conv`` inside a file chunk, and the receiver stores
+    attachments under a directory named after it. An unsanitised value is a
+    path traversal: ``../../.config/autostart`` would drop a file into the
+    autostart directory and run it at the next login.
+
+    Anything that is not a hex id is refused rather than sanitised - a
+    conversation we do not recognise is not one of ours. ``fallback`` is used
+    when the primary value is unusable (the sender's node key, which is the
+    right directory for a DM).
+    """
+    if conv and _CONV_ID_RE.match(conv):
+        return conv
+    if fallback and _CONV_ID_RE.match(fallback):
+        return fallback
+    return None
+
+
 def _human_size(n):
     for unit in ("B", "KB", "MB", "GB"):
         if n < 1024 or unit == "GB":
@@ -1237,6 +1263,7 @@ class MessagesView(Gtk.Box):
         self._send_in_flight = False
         self._history_busy = False
         self._catchup_busy = False
+        self._catchup_attachments_busy = False
         self._file_bufs = {}
         # Sent-file delivery tracking: (node, seq) -> delivery record, plus a
         # small buffer of already-seen acks so an ack that lands while a send is
@@ -1620,9 +1647,13 @@ class MessagesView(Gtk.Box):
         was connected, then count what arrived per conversation.
 
         Uses the single per-peer sync path (the daemon keeps running between app
-        sessions, and recv events broadcast to nobody are lost)."""
+        sessions, and recv events broadcast to nobody are lost).
+
+        Returns False when the sweep could not run (one is already in flight),
+        so the caller can try again instead of losing the sweep for good.
+        """
         if self._catchup_busy:
-            return
+            return False
         self._catchup_busy = True
         session = self.app.session
         peers = set()
@@ -1654,6 +1685,7 @@ class MessagesView(Gtk.Box):
             self._catchup_busy = False
 
         run_async(worker, on_done=done, on_error=fail)
+        return True
 
     def on_thread_selected(self, listbox, row):
         if row is None:
@@ -2434,13 +2466,11 @@ class MessagesView(Gtk.Box):
             return
         session = self.app.session
         conv = opened.get("conv") or node
-        if opened.get("conv"):
-            members = {}
-            for m in opened.get("members", []):
-                members[m["node"]] = {"node": m["node"], "pubkey": m["pubkey"],
-                                      "screen": m.get("screen", "")}
-            if members:
-                session.cache.ensure_room(conv, members)
+        # The roster decides who our replies are sealed to, so it is only
+        # ours when it hashes to the conversation id. A peer that sends a
+        # roster for a different conversation must not be able to rewrite a
+        # room we are in.
+        roster = protocol.valid_room_members(conv, opened.get("members"))
         if session.cache.is_conversation_muted(conv):
             session.cache.add_recv(conv, node, ev.get("seq", 0), opened["ts"], opened["text"])
             thread = self.threads.get(conv)
@@ -2453,14 +2483,22 @@ class MessagesView(Gtk.Box):
         if node not in contact_nodes:
             if session.cache.is_muted(node):
                 return
+            # A stranger's message stays out of our conversations: without a
+            # roster that checks out it is filed as a plain DM request.
             session.cache.add_pending({
                 "node": node, "pubkey": opened.get("from"),
                 "screen": opened.get("screen") or node[:8],
-                "conv": opened.get("conv"), "members": opened.get("members") or [],
+                "conv": conv if roster else node,
+                "members": list(roster.values()) if roster else [],
                 "seq": ev.get("seq", 0), "ts": opened["ts"], "text": opened["text"],
             })
             self.app.surface_pending_requests()
             return
+        if roster:
+            session.cache.ensure_room(conv, {
+                m["node"]: {"node": m["node"], "pubkey": m["pubkey"],
+                            "screen": m.get("screen", "")}
+                for m in roster.values()})
         thread = self.threads.get(conv)
         if thread is None:
             self.sync_sidebar()
@@ -2502,7 +2540,11 @@ class MessagesView(Gtk.Box):
                 or chunk.get("index") != parsed["index"] \
                 or chunk.get("total") != parsed["total"]:
             return  # routing header does not match the sealed body
-        conv = chunk.get("conv") or node
+        conv = safe_conv_id(chunk.get("conv"), node)
+        if conv is None:
+            # The sender picked a conversation id we cannot put on disk.
+            # Refuse the transfer instead of trusting it.
+            return
         key = (conv, chunk["transfer_id"])
         buf = self._file_bufs.get(key)
         if buf is None:
@@ -2548,7 +2590,12 @@ class MessagesView(Gtk.Box):
             self._update_status_row(buf["row"], f"{meta.get('filename') or 'file'} - failed to receive")
 
     def _store_attachment(self, conv, tid, filename, data):
-        d = os.path.join(attachments_dir(), conv)
+        # Belt and braces: the id is validated again right where it becomes a
+        # path component, so no future caller can skip the check.
+        safe = safe_conv_id(conv)
+        if safe is None:
+            raise ValueError(f"refusing to store an attachment under {conv!r}")
+        d = os.path.join(attachments_dir(), safe)
         os.makedirs(d, exist_ok=True)
         path = os.path.join(d, f"{tid}-{sanitize_filename(filename)}")
         tmp = path + ".tmp"
@@ -2565,7 +2612,13 @@ class MessagesView(Gtk.Box):
         if hashlib.sha256(rebuilt).hexdigest() != chunk.get("sha256", ""):
             return False
         filename = chunk.get("filename") or "file"
-        path = self._store_attachment(conv, chunk["transfer_id"], filename, rebuilt)
+        try:
+            path = self._store_attachment(conv, chunk["transfer_id"], filename, rebuilt)
+        except (OSError, ValueError) as e:
+            # A transfer we cannot store safely (or at all) is dropped, not
+            # left to break the rest of the sweep.
+            self.app.activity.log(f"attachment refused: {e}")
+            return False
         attachment = {"path": path, "filename": filename,
                       "mime_hint": chunk.get("mime_hint", ""), "size": len(rebuilt)}
         self.app.session.cache.add_recv(conv, node, seq, ts, filename, attachment=attachment)
@@ -2621,10 +2674,18 @@ class MessagesView(Gtk.Box):
 
     def catchup_attachments(self):
         """Startup sweep: discover complete-but-unconsumed transfers on the daemon
-        and reassemble them, mirroring catchup_unread for text."""
-        if self._catchup_busy:
-            return
-        self._catchup_busy = True
+        and reassemble them, mirroring catchup_unread for text.
+
+        It has its own busy flag: the text sweep can still be running when
+        this one is due, and sharing the flag used to mean the attachment
+        sweep was skipped for good - files that arrived while the app was
+        closed were never fetched.
+
+        Returns False when the sweep could not run, so the caller can retry.
+        """
+        if self._catchup_attachments_busy:
+            return False
+        self._catchup_attachments_busy = True
         session = self.app.session
         nodes = set()
         for info in session.contacts().values():
@@ -2651,14 +2712,15 @@ class MessagesView(Gtk.Box):
             return jobs
 
         def done(jobs):
-            self._catchup_busy = False
+            self._catchup_attachments_busy = False
             for node, tid, chunks in jobs:
                 self._process_fetched_transfer(node, tid, chunks)
 
         def fail(_e):
-            self._catchup_busy = False
+            self._catchup_attachments_busy = False
 
         run_async(worker, on_done=done, on_error=fail)
+        return True
 
 
 class ContactsView(Gtk.Box):
@@ -3203,12 +3265,15 @@ class AimlessWindow(Gtk.Window):
             self.session.cache.unmute(req["node"])
             self.daemon_block_set(req["node"], blocked=False)
             conv = req.get("conv") or req["node"]
-            if req.get("conv"):
-                members = {m["node"]: {"node": m["node"], "pubkey": m["pubkey"],
-                                       "screen": m.get("screen", "")}
-                           for m in req.get("members", [])}
-                if members:
-                    self.session.cache.ensure_room(req["conv"], members)
+            members = {m["node"]: {"node": m["node"], "pubkey": m["pubkey"],
+                                   "screen": m.get("screen", "")}
+                       for m in (req.get("members") or [])}
+            if members:
+                # The user accepted this request, so this roster is approved.
+                # store.ensure_room never replaces the roster of a
+                # conversation that already exists, so a request cannot
+                # hijack a room we are in.
+                self.session.cache.ensure_room(req["conv"], members)
             self.session.cache.add_recv(conv, req["node"],
                                         req.get("seq", 0), req.get("ts", 0), req.get("text", ""))
             self.contacts.refresh()
@@ -3301,11 +3366,17 @@ class AimlessWindow(Gtk.Window):
         return True
 
     def _catchup_once(self):
-        self.messages.catchup_unread()
+        # Retry until the sweep actually runs: the text sweep fetches one
+        # history per peer and can still be in flight when the timer fires.
+        if not self.messages.catchup_unread():
+            return GLib.SOURCE_CONTINUE
         return GLib.SOURCE_REMOVE
 
     def _catchup_attachments_once(self):
-        self.messages.catchup_attachments()
+        # Same for the attachment sweep - it has its own busy flag now, so
+        # the two sweeps no longer cancel each other.
+        if not self.messages.catchup_attachments():
+            return GLib.SOURCE_CONTINUE
         return GLib.SOURCE_REMOVE
 
 
@@ -4439,7 +4510,10 @@ class AimlessApp:
         # Put the app icon in the user's icon theme before anything asks for
         # it - the tray looks the name up when it is created.
         try:
-            appicon.install()
+            if not appicon.install():
+                self.log("could not install the app icon - the drawing stack "
+                         "(python3-cairo) is missing, the taskbar will show a "
+                         "generic icon")
         except Exception as e:
             self.log(f"could not install the app icon: {e!r}")
         setup_application_identity()

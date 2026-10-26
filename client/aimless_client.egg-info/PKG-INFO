@@ -1,8 +1,0 @@
-Metadata-Version: 2.4
-Name: aimless-client
-Version: 0.2.8
-Summary: aimless - serverless instant messaging over the Yggdrasil overlay network
-Requires-Python: >=3.10
-Requires-Dist: pynacl>=1.5
-Provides-Extra: dev
-Requires-Dist: pytest>=8; extra == "dev"

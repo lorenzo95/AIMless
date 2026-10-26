@@ -113,3 +113,34 @@ def test_status_away_none():
     payload = protocol.seal_status(alice, bob_hex, "alice", None, 99)
     st = protocol.open_status(bob, payload)
     assert st["away"] is None
+
+
+# -- room rosters ---------------------------------------------------------
+
+def _member(node):
+    return {"node": node, "pubkey": "cd" * 32, "screen": node[:8]}
+
+
+def test_valid_room_members_accepts_a_roster_that_hashes_to_the_id():
+    members = [_member("aa" * 32), _member("bb" * 32)]
+    conv = protocol.room_id([m["node"] for m in members])
+    roster = protocol.valid_room_members(conv, members)
+    assert roster is not None, "a consistent roster must be accepted"
+    assert set(roster) == {"aa" * 32, "bb" * 32}
+
+
+def test_valid_room_members_rejects_a_roster_for_another_conversation():
+    """A peer must not be able to hand us a roster for a room we are in - the
+    roster decides who our replies are sealed to."""
+    members = [_member("aa" * 32), _member("bb" * 32)]
+    other = protocol.room_id(["cc" * 32, "dd" * 32])
+    assert protocol.valid_room_members(other, members) is None
+
+
+def test_valid_room_members_rejects_junk():
+    assert protocol.valid_room_members("aa" * 32, None) is None
+    assert protocol.valid_room_members("aa" * 32, []) is None
+    assert protocol.valid_room_members("aa" * 32, [{"nope": 1}]) is None
+    assert protocol.valid_room_members(None, [{"node": "aa" * 32}]) is None
+    # a roster that is not a list of dicts must not blow up
+    assert protocol.valid_room_members("aa" * 32, ["not-a-dict"]) is None

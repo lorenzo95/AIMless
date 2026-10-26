@@ -160,3 +160,19 @@ def test_room_id_order_independent():
     from aimless import protocol
     assert protocol.room_id(["aa", "bb", "cc"]) == protocol.room_id(["cc", "aa", "bb"])
     assert protocol.room_id(["aa", "bb"]) != protocol.room_id(["aa", "bb", "cc"])
+
+
+# -- room rosters are never overwritten -----------------------------------
+
+def test_ensure_room_does_not_overwrite_an_existing_roster(tmp_path):
+    """The roster decides who our replies are sealed to. A peer that sends a
+    different roster for the same conversation must not be able to replace it."""
+    c = Store(str(tmp_path / "state.db"), "pw")
+    real = {"aa" * 32: {"node": "aa" * 32, "pubkey": "11" * 32, "screen": "real"}}
+    fake = {"bb" * 32: {"node": "bb" * 32, "pubkey": "22" * 32, "screen": "fake"}}
+    conv = "roomhash"
+    c.ensure_room(conv, real)
+    c.ensure_room(conv, fake)
+    members = c.members(conv)
+    assert set(members) == {"aa" * 32}, f"the roster was rewritten: {members}"
+    c.close()

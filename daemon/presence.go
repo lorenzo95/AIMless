@@ -45,7 +45,7 @@ func NewPresence(mail *Mail, probeInterval time.Duration) *Presence {
 		clientIdle:    30 * time.Second,
 		peers:         make(map[string]*peerPresence),
 	}
-	mail.Presence = p
+	mail.SetPresence(p)
 	return p
 }
 

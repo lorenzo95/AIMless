@@ -131,11 +131,11 @@ func TestAPISendDeliversPacket(t *testing.T) {
 	delivered := make(chan struct{}, 8)
 	var gotFrom ed25519.PublicKey
 	var gotPayload []byte
-	mailB.OnDeliver = func(from ed25519.PublicKey, seq uint64, ts int64, payload []byte) {
+	mailB.SetOnDeliver(func(from ed25519.PublicKey, seq uint64, ts int64, payload []byte) {
 		gotFrom = from
 		gotPayload = payload
 		delivered <- struct{}{}
-	}
+	})
 
 	sock := t.TempDir() + "/api.sock"
 	presenceA := NewPresence(mailA, 250*time.Millisecond)
@@ -145,8 +145,8 @@ func TestAPISendDeliversPacket(t *testing.T) {
 		t.Fatalf("start api: %v", err)
 	}
 	defer api.Close()
-	mailA.OnDeliver = api.DeliverMsg
-	mailA.OnAcked = api.Acked
+	mailA.SetOnDeliver(api.DeliverMsg)
+	mailA.SetOnAcked(api.Acked)
 
 	client := dialAPI(t, sock)
 	client.send(t, apiMessage{
@@ -428,4 +428,42 @@ func TestAPIBlocklistOp(t *testing.T) {
 	if len(resp.Blocked) != 1 || resp.Blocked[0] != hex2 {
 		t.Fatalf("blocked after unblock = %v, want [%s]", resp.Blocked, hex2)
 	}
+}
+
+// A client that stopped reading must not block the server: the broadcast used
+// to write while the server lock was held, so one stuck reader kept new
+// clients from being accepted at all.
+func TestAPIBroadcastDoesNotBlockNewClients(t *testing.T) {
+	_, api, _, sock := startAPIFixture(t)
+
+	// A client that connects and never reads. Its socket buffer fills up
+	// after a few broadcasts and the write blocks.
+	stuck, err := net.Dial("unix", sock)
+	if err != nil {
+		t.Fatalf("dial stuck client: %v", err)
+	}
+	t.Cleanup(func() { stuck.Close() })
+	time.Sleep(200 * time.Millisecond) // let the server accept it
+
+	filler := strings.Repeat("x", 64*1024)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 200; i++ {
+			api.broadcast(apiMessage{Op: "recv", From: "aa", Seq: uint64(i), Payload: filler})
+		}
+	}()
+
+	// A client that connects while the flood is running must still be served.
+	fresh := dialAPI(t, sock)
+	fresh.send(t, apiMessage{Op: "whoami"})
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		resp := fresh.read(t, 5*time.Second)
+		if resp.Op == "whoami" {
+			return
+		}
+		// queued broadcasts come first - skip them
+	}
+	t.Fatal("a stuck reader kept new clients from being served")
 }

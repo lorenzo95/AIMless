@@ -25,11 +25,14 @@ import (
 const keyFileName = "node.key"
 
 type Node struct {
-	Core     *core.Core
-	Pub      ed25519.PublicKey
-	Address  net.IP
-	OnPacket func(from ed25519.PublicKey, payload []byte)
-	OnPathUp func(key ed25519.PublicKey)
+	Core    *core.Core
+	Pub     ed25519.PublicKey
+	Address net.IP
+	// Handlers are installed after the node is running, so they are read
+	// under a lock - a packet arriving mid-install must not race with it.
+	hmu      sync.RWMutex
+	onPacket func(from ed25519.PublicKey, payload []byte)
+	onPathUp func(key ed25519.PublicKey)
 
 	priv      ed25519.PrivateKey
 	listeners []*core.Listener
@@ -121,8 +124,8 @@ func StartNode(datadir string, peers []string, listenURLs []string, log *aimless
 	}
 	go n.writeLoop()
 	c.SetPathNotify(func(key ed25519.PublicKey) {
-		if n.OnPathUp != nil {
-			n.OnPathUp(key)
+		if h := n.pathUpHandler(); h != nil {
+			h(key)
 		}
 	})
 
@@ -156,6 +159,26 @@ func StartNode(datadir string, peers []string, listenURLs []string, log *aimless
 	return n, nil
 }
 
+// SetHandlers installs the packet and path-up handlers.
+func (n *Node) SetHandlers(onPacket func(from ed25519.PublicKey, payload []byte), onPathUp func(key ed25519.PublicKey)) {
+	n.hmu.Lock()
+	n.onPacket = onPacket
+	n.onPathUp = onPathUp
+	n.hmu.Unlock()
+}
+
+func (n *Node) packetHandler() func(from ed25519.PublicKey, payload []byte) {
+	n.hmu.RLock()
+	defer n.hmu.RUnlock()
+	return n.onPacket
+}
+
+func (n *Node) pathUpHandler() func(key ed25519.PublicKey) {
+	n.hmu.RLock()
+	defer n.hmu.RUnlock()
+	return n.onPathUp
+}
+
 func (n *Node) readLoop() {
 	mtu := int(n.Core.MTU())
 	buf := make([]byte, mtu)
@@ -164,7 +187,8 @@ func (n *Node) readLoop() {
 		if err != nil {
 			return
 		}
-		if n.OnPacket == nil || nRead == 0 {
+		handler := n.packetHandler()
+		if handler == nil || nRead == 0 {
 			continue
 		}
 		fromAddr, ok := from.(types.Addr)
@@ -175,7 +199,7 @@ func (n *Node) readLoop() {
 		copy(payload, buf[:nRead])
 		sender := make(ed25519.PublicKey, len(fromAddr))
 		copy(sender, fromAddr)
-		n.OnPacket(sender, payload)
+		handler(sender, payload)
 	}
 }
 

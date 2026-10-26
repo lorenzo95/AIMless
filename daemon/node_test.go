@@ -16,8 +16,7 @@ import (
 )
 
 func wireMail(node *Node, m *Mail) {
-	node.OnPacket = m.HandlePacket
-	node.OnPathUp = m.PathUp
+	node.SetHandlers(m.HandlePacket, m.PathUp)
 }
 
 func hexString(b []byte) string {
@@ -111,12 +110,12 @@ func TestTwoNodeLoopbackEcho(t *testing.T) {
 
 	pktA := make(chan packet, 8)
 	pktB := make(chan packet, 8)
-	nodeA.OnPacket = func(from ed25519.PublicKey, payload []byte) {
+	nodeA.SetHandlers(func(from ed25519.PublicKey, payload []byte) {
 		pktA <- packet{from: from, payload: payload}
-	}
-	nodeB.OnPacket = func(from ed25519.PublicKey, payload []byte) {
+	}, nil)
+	nodeB.SetHandlers(func(from ed25519.PublicKey, payload []byte) {
 		pktB <- packet{from: from, payload: payload}
-	}
+	}, nil)
 
 	got := sendUntilReceived(t, nodeB, nodeA.Pub, []byte("ping"), pktA, 30*time.Second)
 	if string(got.payload) != "ping" {

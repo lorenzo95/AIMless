@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/ed25519"
+	"sync"
 	"testing"
 	"time"
 )
@@ -52,17 +53,17 @@ func TestMailDeliverAndAck(t *testing.T) {
 	delivered := make(chan struct{}, 8)
 	var gotPayload []byte
 	var gotSeq uint64
-	mailB.OnDeliver = func(from ed25519.PublicKey, seq uint64, ts int64, payload []byte) {
+	mailB.SetOnDeliver(func(from ed25519.PublicKey, seq uint64, ts int64, payload []byte) {
 		gotPayload = payload
 		gotSeq = seq
 		delivered <- struct{}{}
-	}
+	})
 	acked := make(chan struct{}, 8)
 	var ackedSeq uint64
-	mailA.OnAcked = func(to ed25519.PublicKey, seq uint64) {
+	mailA.SetOnAcked(func(to ed25519.PublicKey, seq uint64) {
 		ackedSeq = seq
 		acked <- struct{}{}
-	}
+	})
 
 	seq, err := mailA.SendMsg(nodeB.Pub, []byte("mail hello"))
 	if err != nil {
@@ -125,20 +126,28 @@ func TestMailOfflineDelivery(t *testing.T) {
 	mailB.Attach(nodeB)
 
 	delivered := make(chan struct{}, 8)
+	// The callback runs on the node's read loop, so the values it hands over
+	// are guarded (the race detector is part of the test run).
+	var gotMu sync.Mutex
 	var gotSeq uint64
 	var gotPayload []byte
-	mailB.OnDeliver = func(from ed25519.PublicKey, s uint64, ts int64, payload []byte) {
+	mailB.SetOnDeliver(func(from ed25519.PublicKey, s uint64, ts int64, payload []byte) {
+		gotMu.Lock()
 		gotSeq, gotPayload = s, payload
+		gotMu.Unlock()
 		delivered <- struct{}{}
-	}
+	})
 	acked := make(chan struct{}, 8)
-	mailA.OnAcked = func(to ed25519.PublicKey, s uint64) {
+	mailA.SetOnAcked(func(to ed25519.PublicKey, s uint64) {
 		acked <- struct{}{}
-	}
+	})
 
 	waitFor(t, 20*time.Second, "offline message delivery", delivered)
-	if gotSeq != seq || string(gotPayload) != "while you were out" {
-		t.Fatalf("delivered seq=%d payload=%q, want seq=%d", gotSeq, gotPayload, seq)
+	gotMu.Lock()
+	gotSeqCopy, gotPayloadCopy := gotSeq, gotPayload
+	gotMu.Unlock()
+	if gotSeqCopy != seq || string(gotPayloadCopy) != "while you were out" {
+		t.Fatalf("delivered seq=%d payload=%q, want seq=%d", gotSeqCopy, gotPayloadCopy, seq)
 	}
 	waitFor(t, 20*time.Second, "ack after reconnect", acked)
 	if len(mailA.boxes[hexString(pubB32)].journal.Pending()) != 0 {
@@ -170,9 +179,9 @@ func TestMailHistoryReplay(t *testing.T) {
 	mailB.Attach(nodeB)
 
 	acked := make(chan struct{}, 32)
-	mailA.OnAcked = func(to ed25519.PublicKey, seq uint64) {
+	mailA.SetOnAcked(func(to ed25519.PublicKey, seq uint64) {
 		acked <- struct{}{}
-	}
+	})
 	for i := 1; i <= 5; i++ {
 		if _, err := mailA.SendMsg(nodeB.Pub, []byte{byte('a' + i - 1)}); err != nil {
 			t.Fatal(err)
@@ -255,13 +264,13 @@ func TestBlockInboundDropsUntilUnblock(t *testing.T) {
 	mailB.Attach(nodeB)
 
 	delivered := make(chan struct{}, 8)
-	mailA.OnDeliver = func(from ed25519.PublicKey, seq uint64, ts int64, payload []byte) {
+	mailA.SetOnDeliver(func(from ed25519.PublicKey, seq uint64, ts int64, payload []byte) {
 		delivered <- struct{}{}
-	}
+	})
 	acked := make(chan struct{}, 8)
-	mailB.OnAcked = func(to ed25519.PublicKey, seq uint64) {
+	mailB.SetOnAcked(func(to ed25519.PublicKey, seq uint64) {
 		acked <- struct{}{}
-	}
+	})
 
 	if err := mailA.Block(nodeB.Pub); err != nil {
 		t.Fatal(err)

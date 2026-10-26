@@ -72,8 +72,11 @@ class Sync:
 
     def _route(self, peer: str, seq: int, opened: dict):
         conv = opened.get("conv") or peer
-        members = opened.get("members")
+        # A roster is only used when it hashes to the conversation id, and an
+        # existing roster is never overwritten (store.ensure_room). Otherwise
+        # a peer could rewrite the room we are in and receive our replies.
+        members = protocol.valid_room_members(conv, opened.get("members"))
         if members:
-            self.store.ensure_room(conv, {m["node"]: m for m in members})
+            self.store.ensure_room(conv, {m["node"]: m for m in members.values()})
         new = self.store.ingest(conv, peer, seq, opened["ts"], opened["text"])
         return conv, new

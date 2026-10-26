@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/ed25519"
 	"encoding/base64"
+	"sync"
 	"testing"
 	"time"
 )
@@ -35,13 +36,13 @@ func TestFileChunkDeliveryRetrievalAndAck(t *testing.T) {
 	mailB.Attach(nodeB)
 
 	delivered := make(chan struct{}, 8)
-	mailA.OnDeliverFile = func(from ed25519.PublicKey, seq uint64, ts int64, payload []byte) {
+	mailA.SetOnDeliverFile(func(from ed25519.PublicKey, seq uint64, ts int64, payload []byte) {
 		delivered <- struct{}{}
-	}
+	})
 	acked := make(chan struct{}, 8)
-	mailB.OnAcked = func(to ed25519.PublicKey, seq uint64) {
+	mailB.SetOnAcked(func(to ed25519.PublicKey, seq uint64) {
 		acked <- struct{}{}
-	}
+	})
 
 	tid := "00112233445566778899aabbccddeeff"
 	chunk := filePayload(tid, 0, 2, []byte("hello file"))
@@ -116,9 +117,9 @@ func TestFileChunkBlockedDropsLikeText(t *testing.T) {
 	mailB.Attach(nodeB)
 
 	delivered := make(chan struct{}, 8)
-	mailA.OnDeliverFile = func(from ed25519.PublicKey, seq uint64, ts int64, payload []byte) {
+	mailA.SetOnDeliverFile(func(from ed25519.PublicKey, seq uint64, ts int64, payload []byte) {
 		delivered <- struct{}{}
-	}
+	})
 	if err := mailA.Block(nodeB.Pub); err != nil {
 		t.Fatal(err)
 	}
@@ -164,10 +165,14 @@ func TestFileChunkDedupFiresDeliverOnce(t *testing.T) {
 	mailA.Attach(nodeA)
 	mailB.Attach(nodeB)
 
+	// The callback runs on the node's read loop: guard the counter.
+	var countMu sync.Mutex
 	count := 0
-	mailA.OnDeliverFile = func(from ed25519.PublicKey, seq uint64, ts int64, payload []byte) {
+	mailA.SetOnDeliverFile(func(from ed25519.PublicKey, seq uint64, ts int64, payload []byte) {
+		countMu.Lock()
 		count++
-	}
+		countMu.Unlock()
+	})
 	chunk := filePayload("tid1", 1, 2, []byte("dup me"))
 	for i := 0; i < 3; i++ {
 		if _, err := mailB.SendFile(nodeA.Pub, chunk); err != nil {
@@ -175,12 +180,21 @@ func TestFileChunkDedupFiresDeliverOnce(t *testing.T) {
 		}
 	}
 	deadline := time.Now().Add(15 * time.Second)
-	for time.Now().Before(deadline) && count < 1 {
+	for time.Now().Before(deadline) {
+		countMu.Lock()
+		n := count
+		countMu.Unlock()
+		if n >= 1 {
+			break
+		}
 		time.Sleep(50 * time.Millisecond)
 	}
 	time.Sleep(500 * time.Millisecond)
-	if count != 1 {
-		t.Fatalf("duplicate chunk delivered %d times, want 1", count)
+	countMu.Lock()
+	final := count
+	countMu.Unlock()
+	if final != 1 {
+		t.Fatalf("duplicate chunk delivered %d times, want 1", final)
 	}
 }
 
