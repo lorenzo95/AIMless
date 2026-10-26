@@ -9,7 +9,11 @@ rm -rf "$STAGE"
 mkdir -p "$STAGE"
 
 echo "building daemon …"
-(cd "$ROOT/daemon" && CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o "$STAGE/aimlessd" .)
+# -buildvcs=false keeps the artifact reproducible: without it go stamps the
+# current commit's revision and timestamp into the binary, so every release
+# produced different bytes even when the daemon code had not changed at all.
+# The provenance lives in git history, next to the binary itself.
+(cd "$ROOT/daemon" && CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags "-s -w" -o "$STAGE/aimlessd" .)
 echo "staging client …"
 cp -r "$ROOT/client/aimless" "$STAGE/aimless"
 cp "$ROOT/client/pyproject.toml" "$STAGE/pyproject.toml"
@@ -81,8 +85,8 @@ rm -rf "$STAGE"
 echo "building release artifacts …"
 DAEMON_ART="aimlessd-linux-amd64"
 PYZ_ART="aimless.pyz"
-CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o "$OUT/$DAEMON_ART" "$ROOT/daemon" 2>/dev/null || \
-  (cd "$ROOT/daemon" && CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o "$OUT/$DAEMON_ART" .)
+CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags "-s -w" -o "$OUT/$DAEMON_ART" "$ROOT/daemon" 2>/dev/null || \
+  (cd "$ROOT/daemon" && CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags "-s -w" -o "$OUT/$DAEMON_ART" .)
 python3 - <<PYEOF
 import os, shutil, subprocess, sys, tempfile
 root = "$ROOT"
@@ -100,6 +104,20 @@ sys.exit(main())
 '''
 with open(os.path.join(stage, "__main__.py"), "w") as f:
     f.write(main_src)
+# Fixed mtimes, so the zip is byte-identical when the source did not change:
+# a zip stores the mtime of every entry, and a plain build would therefore
+# produce different bytes on every run.
+epoch = 315619200  # 1980-01-02 UTC - the oldest a zip can hold, in every timezone
+for dirpath, dirnames, filenames in os.walk(stage):
+    for name in list(dirnames) + list(filenames):
+        try:
+            os.utime(os.path.join(dirpath, name), (epoch, epoch))
+        except OSError:
+            pass
+try:
+    os.utime(stage, (epoch, epoch))
+except OSError:
+    pass
 subprocess.run([sys.executable, "-m", "zipapp", stage, "-o", os.path.join(out, "$PYZ_ART"),
                 "-p", "/usr/bin/env python3"], check=True)
 shutil.rmtree(stage)
