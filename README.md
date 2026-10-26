@@ -53,6 +53,8 @@ Requires Linux, `python3` with `pynacl`, and the GTK stack (`python3-gi`, `gir1.
 
 The autostart entry runs `aimless tray` at login, and a login entry fires *before* the panel is up - so the app waits up to 15 seconds for a tray host to adopt its icon before it decides there is no tray. Without that wait it used to exit immediately, and the tray never came up after a reboot. `aimless autostart` (re)writes the entry; check it with `cat ~/.config/autostart/aimless-tray.desktop` if the tray is missing after a login.
 
+The autostarted app is **locked** - it starts without asking for your passphrase. It still tells you when a message arrives (badge, tooltip and a notification), it just cannot read it until you click the tray icon and unlock.
+
 **From source:**
 
 ```sh
@@ -138,7 +140,7 @@ The daemon keeps running on its own and only advertises you as *present* while a
 | Tray icon | Meaning |
 |---|---|
 | yellow running man | attached - your buddies see you as available |
-| yellow running man + red badge | attached, and something is unread |
+| yellow running man + red badge | attached, and something is unread (or waiting, if the app is still locked) |
 | **red running man** | **not attached** - the daemon is not hearing us; your buddies see you as offline |
 | red running man + red badge | not attached *and* something is unread |
 
@@ -155,6 +157,20 @@ Two different things can break, and both end up on the same red icon with a diff
 | The daemon is alive but has **no Yggdrasil peer up** | the daemon's peer list | *no Yggdrasil peers - the daemon is on an island* |
 
 The last one is the subtle one: the daemon answers, the app is happy, the window looks fine - and the node still cannot reach the overlay network, so nobody can reach you. A daemon with peers configured and none of them up is an island; a daemon started with `-peers none` has no peers *by choice* and is left alone.
+
+### Messages waiting before you unlock
+
+At login the app starts in the tray **locked** - no passphrase has been typed yet, so it cannot decrypt anything. It still knows that something arrived, because the daemon journals every message it receives:
+
+- the tray icon gets the red badge as soon as a message lands,
+- the tooltip says **"N new message(s) waiting"** and the right-click menu says **"Status: locked - N message(s) waiting"**,
+- a desktop notification says the same.
+
+Nothing is consumed by looking: the count is what the daemon journaled past our own watermark, and the watermark stays where it is, so unlocking still shows the message as unread.
+
+The counting needs no passphrase: the buddy keys in `client/contacts.json` and the per-peer watermark in `client/state.db` are routing metadata and are stored in the clear. Only the message *contents* are encrypted, and those need the passphrase.
+
+Unlock and the wording changes to the normal **"N unread"** - the same count, the same messages. From then on the app keeps the badge up to date on its own, and closing the window (which only hides it) does not stop it.
 
 In remote (ssh) mode the app talks to the remote daemon through the tunnel's local socket, so the same checks apply to the remote host - the tunnel dropping and the remote daemon losing its peers are both caught. While the tunnel is still coming up the app is *connecting*, not offline, and says so instead of raising a false alarm.
 

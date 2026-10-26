@@ -34,6 +34,7 @@ from gi.repository import Gtk, GLib, Gdk, Pango, GdkPixbuf, Gio
 from . import crypto, protocol, logging, paths
 from . import tunnel
 from . import appicon
+from . import pending
 from . import keys as keysmod
 from .daemon import DaemonClient, Client, DaemonError
 from .service import Sync
@@ -43,6 +44,8 @@ from . import MIN_DAEMON_BUILD
 
 APP_NAME = "AIMless"
 STATUS_REASSERT_SECONDS = 60
+# How often the locked app asks the daemon how many messages are waiting.
+PENDING_CHECK_SECONDS = 15
 
 
 def prefs_file():
@@ -2373,10 +2376,10 @@ class MessagesView(Gtk.Box):
         recipient (a recipient is done when all their chunks are acked)."""
         keys = {(n, int(s)) for n, s in keys if int(s)}
         members_total = len({n for n, _ in keys})
-        pending = keys - (keys & self._acked_seen)
-        rec = {"row": row, "filename": filename, "keys": pending,
+        outstanding = keys - (keys & self._acked_seen)
+        rec = {"row": row, "filename": filename, "keys": outstanding,
                "members_total": members_total}
-        for k in pending:
+        for k in outstanding:
             self._pending_files[k] = rec
         self._set_delivery_text(rec)
 
@@ -4189,6 +4192,7 @@ class TrayIcon:
     unread = 0
     offline = False
     reason = ""
+    locked = False
 
     def __init__(self, app):
         self.app = app
@@ -4196,6 +4200,7 @@ class TrayIcon:
         self.unread = 0
         self.offline = False
         self.reason = ""
+        self.locked = False
         self.menu = Gtk.Menu()
         mi_open = Gtk.MenuItem(label="Open AIMless")
         mi_open.connect("activate", self.on_open)
@@ -4222,13 +4227,23 @@ class TrayIcon:
         except Exception as e:
             app.log(f"tray icon unavailable ({e!r}) - running as a plain window app")
 
-    def set_unread(self, n):
+    def set_unread(self, n, locked=False):
         """Show unread messages on the tray icon itself, not just the tooltip.
 
         The tooltip alone is invisible until you hover, so a new message left
         no trace on the icon. The badge variant makes it obvious at a glance.
+
+        ``locked`` marks the count as "messages are waiting, the app is not
+        unlocked yet" - the app cannot read them, so the wording says so.
         """
         self.unread = int(n or 0)
+        self.locked = bool(locked)
+        self._apply()
+
+    def set_locked(self, locked):
+        """The app was unlocked (or locked again) - the wording changes, the
+        count does not: the same messages are still unread."""
+        self.locked = bool(locked)
         self._apply()
 
     def set_offline(self, offline, reason=""):
@@ -4253,14 +4268,23 @@ class TrayIcon:
             lines.append("Left-click to open Messages")
             return "\n".join(lines)
         if self.unread:
+            if self.locked:
+                return (f"{APP_NAME} - {self.unread} new message(s) waiting\n"
+                        "Click to unlock AIMless and read them")
             return f"{APP_NAME} - {self.unread} unread\nLeft-click to open Messages"
+        if self.locked:
+            return f"{APP_NAME} - locked\nClick to unlock AIMless"
         return f"{APP_NAME} - running\nLeft-click to open Messages"
 
     def _status_line(self):
         if self.offline:
             return f"Status: offline - {self.reason}" if self.reason else "Status: offline"
         if self.unread:
+            if self.locked:
+                return f"Status: locked - {self.unread} message(s) waiting"
             return f"Status: running - {self.unread} unread"
+        if self.locked:
+            return "Status: locked"
         return "Status: running"
 
     def _apply(self):
@@ -4405,6 +4429,13 @@ class AimlessApp:
         self._island_reason = ""
         self._island_timer = None
         self._offline_notified = False
+        # Locked state: the app runs at login without the passphrase, so it
+        # cannot decrypt anything - but the daemon keeps journaling what
+        # arrives, so the tray can still say "a message is waiting".
+        self._pending_timer = None
+        self._pending_busy = False
+        self._pending_count = 0
+        self._pending_error = ""
         # Put the app icon in the user's icon theme before anything asks for
         # it - the tray looks the name up when it is created.
         try:
@@ -4464,6 +4495,10 @@ class AimlessApp:
         GLib.timeout_add_seconds(5, self.poll)
         GLib.timeout_add_seconds(10, self.heartbeat)
         GLib.timeout_add_seconds(PEER_CHECK_SECONDS, self.check_peers)
+        # Count the messages that arrive while the app is locked. Once the
+        # identity is unlocked the real unread counters take over.
+        self._pending_timer = GLib.timeout_add_seconds(PENDING_CHECK_SECONDS,
+                                                       self._check_pending)
         if self.supervisor.external:
             self.log(f"external daemon mode - tunnel to {self.supervisor.tunnel.host}")
             GLib.timeout_add_seconds(20, self.probe_tunnel)
@@ -4748,6 +4783,15 @@ class AimlessApp:
         if session.cache_recovered:
             self.log(f"cache recovery: {session.cache_recovered}")
         self.session = session
+        # The app is unlocked now: the real unread counters take over from the
+        # locked-state count (same messages, different wording). The pending
+        # timer removes itself on its next tick.
+        tray = getattr(self, "tray", None)
+        if tray is not None:
+            try:
+                tray.set_locked(False)
+            except Exception:
+                pass
         self.window = AimlessWindow(session, self.supervisor, app_ref=self)
         self.window.restore_geometry()
         self.window.show_all()
@@ -5087,6 +5131,77 @@ class AimlessApp:
             desktop_notify(title, body, icon)
         except Exception:
             pass
+
+    # -- messages waiting while the app is locked --------------------------
+    def _check_pending(self):
+        """Count the messages that arrived while the app was locked.
+
+        The app cannot decrypt anything before the passphrase is typed, but the
+        daemon journals every message it receives - so the tray can still say
+        "a message is waiting". The count is what the daemon journaled past our
+        own watermark; the watermark is not touched, so unlocking still counts
+        the same messages as unread.
+
+        Once a session exists the real unread counters own the badge and this
+        stops.
+        """
+        if self.quitting:
+            return GLib.SOURCE_REMOVE
+        if self.session is not None:
+            self._pending_timer = None
+            return GLib.SOURCE_REMOVE
+        if self._pending_busy:
+            return GLib.SOURCE_CONTINUE
+        self._pending_busy = True
+
+        def worker():
+            d = DaemonClient(sock_path())
+            try:
+                return pending.pending_count(d, paths.contacts_path(), paths.cache_path())
+            finally:
+                try:
+                    d.close()
+                except Exception:
+                    pass
+
+        def done(n):
+            self._pending_busy = False
+            self._pending_error = ""
+            self._apply_pending(n)
+
+        def fail(e):
+            self._pending_busy = False
+            # Log a changed error once, not every round: a dead daemon already
+            # has the tray saying so.
+            msg = repr(e)
+            if msg != self._pending_error:
+                self._pending_error = msg
+                self.log(f"pending count failed: {msg}")
+
+        run_async(worker, on_done=done, on_error=fail)
+        return GLib.SOURCE_CONTINUE
+
+    def _apply_pending(self, n):
+        """Put the waiting-message count on the tray (locked app only)."""
+        if self.session is not None:
+            return
+        n = int(n or 0)
+        if n == self._pending_count:
+            return
+        grew = n > self._pending_count
+        self._pending_count = n
+        if grew or n == 0:
+            self.log(f"{n} message(s) waiting (app is locked)")
+        tray = getattr(self, "tray", None)
+        if tray is not None:
+            try:
+                tray.set_unread(n, locked=True)
+            except Exception:
+                pass
+        if grew and n:
+            self._notify(APP_NAME,
+                         f"{n} new message(s) waiting - click the tray icon to unlock "
+                         "AIMless and read them")
 
     def _announce_detached_gap(self):
         """Tell the user how long they were away, if it was long enough to

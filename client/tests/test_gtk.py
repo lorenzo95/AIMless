@@ -2077,6 +2077,224 @@ def test_tray_menu_shows_the_state(gtk_app):
     assert "running" in tray.status_item.get_label()
 
 
+# -- messages waiting while the app is locked ------------------------------
+
+class _JournalDaemon:
+    """A daemon client that hands out a per-peer journal tail.
+
+    Mirrors the real low-level daemon client: ``request(op, **kwargs)``.
+    """
+
+    def __init__(self, tails):
+        self.tails = tails
+        self.asked = []
+
+    def request(self, op, **kwargs):
+        assert op == "history"
+        node = kwargs["from"]
+        after = kwargs["seq"]
+        self.asked.append((node, after))
+        msgs = self.tails.get(node, [])
+        return {"msgs": [m for m in msgs if m.get("seq", 0) > after]}
+
+
+class _JournalDaemonHighLevel:
+    """The same, but with the high-level ``history(node, seq)`` spelling."""
+
+    def __init__(self, tails):
+        self.tails = tails
+        self.asked = []
+
+    def history(self, node, after_seq):
+        self.asked.append((node, after_seq))
+        msgs = self.tails.get(node, [])
+        return {"msgs": [m for m in msgs if m.get("seq", 0) > after_seq]}
+
+
+def _locked_home(tmp_path, monkeypatch):
+    """A home with one contact and a local watermark for it."""
+    home = tmp_path / "locked"
+    home.mkdir()
+    monkeypatch.setenv("AIMLESS_HOME", str(home))
+    gtkui.paths.ensure_dirs()
+    node = "00" * 32
+    protocol.save_contacts(gtkui.paths.contacts_path(), {
+        "_self": {"screen": "Me", "pubkey": "ab" * 32},
+        "bob": {"pubkey": "cd" * 32, "node": node, "screen": "Bob"},
+    })
+    store = Store(gtkui.paths.cache_path(), "testpass")
+    store.set_cursor(node, 5)
+    store.close()
+    return node
+
+
+def test_pending_count_is_what_the_daemon_journaled_past_our_watermark(tmp_path, monkeypatch):
+    """The locked app cannot decrypt, but it can still count: the daemon
+    journaled the messages, the local watermark says how far we got."""
+    from aimless import pending as pendingmod
+
+    node = _locked_home(tmp_path, monkeypatch)
+    daemon = _JournalDaemon({node: [{"seq": 6}, {"seq": 7}]})
+    n = pendingmod.pending_count(daemon, gtkui.paths.contacts_path(),
+                                 gtkui.paths.cache_path())
+    assert n == 2, f"expected 2 waiting messages, got {n}"
+    assert daemon.asked == [(node, 5)], "the count must start at our own watermark"
+
+
+def test_pending_count_is_zero_when_nothing_arrived(tmp_path, monkeypatch):
+    from aimless import pending as pendingmod
+
+    node = _locked_home(tmp_path, monkeypatch)
+    daemon = _JournalDaemon({node: [{"seq": 1}, {"seq": 2}]})
+    n = pendingmod.pending_count(daemon, gtkui.paths.contacts_path(),
+                                 gtkui.paths.cache_path())
+    assert n == 0, "messages we already ingested are not waiting"
+
+
+def test_pending_count_survives_a_missing_store(tmp_path, monkeypatch):
+    """First run: no local store yet. Every journalled message is new."""
+    from aimless import pending as pendingmod
+
+    home = tmp_path / "fresh"
+    home.mkdir()
+    monkeypatch.setenv("AIMLESS_HOME", str(home))
+    gtkui.paths.ensure_dirs()
+    node = "11" * 32
+    protocol.save_contacts(gtkui.paths.contacts_path(), {
+        "_self": {"screen": "Me", "pubkey": "ab" * 32},
+        "bob": {"pubkey": "cd" * 32, "node": node, "screen": "Bob"},
+    })
+    daemon = _JournalDaemon({node: [{"seq": 1}, {"seq": 2}, {"seq": 3}]})
+    n = pendingmod.pending_count(daemon, gtkui.paths.contacts_path(),
+                                 gtkui.paths.cache_path())
+    assert n == 3
+
+
+def test_pending_count_ignores_a_peer_that_cannot_be_asked(tmp_path, monkeypatch):
+    """One unreachable peer must not throw the whole count away."""
+    from aimless import pending as pendingmod
+
+    node = _locked_home(tmp_path, monkeypatch)
+    other = "22" * 32
+    contacts = protocol.load_contacts(gtkui.paths.contacts_path())
+    contacts["carol"] = {"pubkey": "ef" * 32, "node": other, "screen": "Carol"}
+    protocol.save_contacts(gtkui.paths.contacts_path(), contacts)
+
+    class _HalfBroken:
+        def request(self, op, **kwargs):
+            if kwargs["from"] == other:
+                raise OSError("that peer is gone")
+            return {"msgs": [{"seq": 6}, {"seq": 7}]}
+
+    n = pendingmod.pending_count(_HalfBroken(), gtkui.paths.contacts_path(),
+                                 gtkui.paths.cache_path())
+    assert n == 2, "the working peer still has to be counted"
+
+
+def test_pending_count_talks_to_the_daemon_client_either_way(tmp_path, monkeypatch):
+    """The daemon client is used two ways in this codebase - the low-level
+    request() and the high-level history(). Both have to work."""
+    from aimless import pending as pendingmod
+
+    node = _locked_home(tmp_path, monkeypatch)
+    tails = {node: [{"seq": 6}]}
+
+    low = _JournalDaemon(tails)
+    assert pendingmod.pending_count(low, gtkui.paths.contacts_path(),
+                                    gtkui.paths.cache_path()) == 1
+    assert low.asked == [(node, 5)]
+
+    high = _JournalDaemonHighLevel(tails)
+    assert pendingmod.pending_count(high, gtkui.paths.contacts_path(),
+                                    gtkui.paths.cache_path()) == 1
+    assert high.asked == [(node, 5)]
+
+
+def test_pending_count_does_not_hide_a_broken_daemon(tmp_path, monkeypatch):
+    """If every peer fails, the error has to surface - a silent '0 messages'
+    would look exactly like a quiet inbox."""
+    from aimless import pending as pendingmod
+
+    _locked_home(tmp_path, monkeypatch)
+
+    class _Broken:
+        def request(self, op, **kwargs):
+            raise OSError("daemon went away")
+
+    with pytest.raises(OSError):
+        pendingmod.pending_count(_Broken(), gtkui.paths.contacts_path(),
+                                 gtkui.paths.cache_path())
+
+
+def test_locked_app_shows_the_waiting_messages_on_the_tray(tmp_path, monkeypatch):
+    """The tray has to say a message is waiting even though the app is
+    locked - that is the whole point of the autostart entry."""
+    from aimless import appicon
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    appicon.install()
+
+    tray = gtkui.TrayIcon.__new__(gtkui.TrayIcon)
+    tray.app = None
+    tray.have_tray = True
+    tray.icon = Gtk.StatusIcon()
+    tray.status_item = Gtk.MenuItem(label="Status: running")
+
+    tray.set_unread(0)
+    plain = tray.icon.get_icon_name()
+    tray.set_unread(2, locked=True)
+    assert tray.icon.get_icon_name() != plain, "the badge must show up"
+    assert tray.icon.get_icon_name() == appicon.UNREAD_ICON_NAME
+    tip = tray.icon.get_tooltip_text()
+    assert "2 new message(s) waiting" in tip
+    assert "unlock" in tip.lower(), "the tooltip must say the app is locked"
+    assert "locked" in tray.status_item.get_label()
+
+    # Unlocked: the same count, the other wording.
+    tray.set_locked(False)
+    assert "2 unread" in tray.icon.get_tooltip_text()
+    assert "unread" in tray.status_item.get_label()
+
+
+def test_pending_count_reaches_the_tray_while_locked(tmp_path, monkeypatch):
+    """The app pushes the count it polled onto the tray."""
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("AIMLESS_HOME", str(tmp_path / "home"))
+
+    class _StubTray:
+        have_tray = True
+
+        def __init__(self):
+            self.unread = None
+            self.locked = None
+
+        def set_unread(self, n, locked=False):
+            self.unread = n
+            self.locked = locked
+
+    app = gtkui.AimlessApp()
+    tray = _StubTray()
+    app.tray = tray
+    app.session = None
+
+    app._apply_pending(3)
+    assert tray.unread == 3
+    assert tray.locked is True, "the count must be marked as 'waiting, not read yet'"
+
+    # Unlocked apps do not use this path - the real counters own the badge.
+    app.session = object()
+    app._apply_pending(9)
+    assert tray.unread == 3, "an unlocked app must not be overwritten by the pending count"
+
+
+def test_pending_timer_stops_once_the_app_is_unlocked(tmp_path, monkeypatch):
+    """The unlocked app counts unread itself; the locked-state poll stops."""
+    monkeypatch.setenv("AIMLESS_HOME", str(tmp_path / "home"))
+    app = gtkui.AimlessApp()
+    app.session = object()
+    assert app._check_pending() == GLib.SOURCE_REMOVE
+
+
 def test_link_failure_turns_the_tray_red(tmp_path, monkeypatch):
     """The app has to tell the tray when the daemon stops hearing us."""
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
