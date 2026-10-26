@@ -643,6 +643,72 @@ def first_icon(*names):
     return names[-1]
 
 
+# How long the daemon has to stop answering before we call it offline. The
+# daemon forgets a client after 30s, so 15s warns us before our buddies see
+# "client offline - messages will be delivered".
+LINK_GRACE_SECONDS = 15
+
+# A gap longer than this between two app starts means we were detached for a
+# while - worth telling the user, because that is what the buddies saw.
+DETACHED_NOTICE_SECONDS = 900
+
+
+def desktop_notify(title, body, icon_name=None):
+    """Pop a desktop notification. Silently does nothing where it is missing."""
+    try:
+        gi.require_version("Notify", "0.7")
+        from gi.repository import Notify
+        if not Notify.is_initted():
+            Notify.init("aimless")
+        note = Notify.Notification.new(title, body, icon_name or appicon.ICON_NAME)
+        note.show()
+        return True
+    except Exception:
+        return False
+
+
+def fmt_duration(seconds):
+    """'42s', '12m 05s', '2h 30m' - for the offline notices."""
+    s = int(max(0, seconds))
+    if s < 60:
+        return f"{s}s"
+    if s < 3600:
+        return f"{s // 60}m {s % 60:02d}s"
+    return f"{s // 3600}h {(s % 3600) // 60:02d}m"
+
+
+def detached_gap_seconds(log_path=None, now=None):
+    """How long the app was not running before this start.
+
+    The app logs 'shutting down' when it stops, so the time since that line
+    is the time we were detached - exactly the window in which the buddies
+    saw us as offline. A run that never logged a shutdown (killed, crashed)
+    leaves no answer, and we say nothing rather than guess.
+    """
+    path = log_path or paths.app_log_path()
+    try:
+        with open(path) as f:
+            lines = f.readlines()
+    except OSError:
+        return None
+    stamp = None
+    for line in reversed(lines[-400:]):
+        if "shutting down" not in line:
+            continue
+        m = re.match(r"\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]", line)
+        if m:
+            stamp = m.group(1)
+            break
+    if not stamp:
+        return None
+    try:
+        then = datetime.strptime(stamp, "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return None
+    now = now or datetime.now()
+    return max(0.0, (now - then).total_seconds())
+
+
 def set_net_wm_icon_name(window, name):
     """Publish the icon *name* on the X window.
 
@@ -731,14 +797,18 @@ def setup_application_identity():
         pass
 
 
-def tray_icon_name(unread=False):
-    """Icon name for the tray: the app icon, badged when there are unread."""
-    name = appicon.icon_name(unread)
+def tray_icon_name(unread=False, offline=False):
+    """Icon name for the tray: the app icon, badged when there are unread and
+    red when the client is not attached."""
+    name = appicon.icon_name(unread, offline)
     if appicon.has_icon(name):
         return name
     # No app icon in the theme (first run, or a read-only home). Fall back to
-    # theme icons - but keep the two states distinct whatever the theme has,
-    # otherwise the unread badge silently disappears.
+    # theme icons - but keep the states distinct whatever the theme has,
+    # otherwise the unread badge or the offline warning silently disappears.
+    if offline:
+        return first_icon("network-offline-symbolic",
+                          "network-wireless-signal-none-symbolic", "dialog-error")
     if unread:
         return first_icon("mail-unread-symbolic", "mail-message-new-symbolic")
     return first_icon("user-available-symbolic", "phone")
@@ -4065,13 +4135,28 @@ def acquire_app_lock():
 
 
 class TrayIcon:
+    # Class-level defaults so a TrayIcon built without __init__ (tests) still
+    # has a sane state.
+    unread = 0
+    offline = False
+    reason = ""
+
     def __init__(self, app):
         self.app = app
         self.have_tray = False
+        self.unread = 0
+        self.offline = False
+        self.reason = ""
         self.menu = Gtk.Menu()
         mi_open = Gtk.MenuItem(label="Open AIMless")
         mi_open.connect("activate", self.on_open)
         self.menu.append(mi_open)
+        self.menu.append(Gtk.SeparatorMenuItem())
+        # A status line, so the state is visible in the menu too - not just
+        # in the tooltip, which only shows on hover.
+        self.status_item = Gtk.MenuItem(label="Status: running")
+        self.status_item.set_sensitive(False)
+        self.menu.append(self.status_item)
         self.menu.append(Gtk.SeparatorMenuItem())
         mi_quit = Gtk.MenuItem(label="Quit - shuts down AIMless")
         mi_quit.connect("activate", self.on_quit)
@@ -4079,13 +4164,12 @@ class TrayIcon:
         self.menu.show_all()
         try:
             self.icon = Gtk.StatusIcon()
-            self.icon.set_from_icon_name(tray_icon_name(False))
             self.icon.set_title(APP_NAME)
-            self.icon.set_tooltip_text(f"{APP_NAME} - running\nLeft-click to open Messages")
             self.icon.connect("activate", self.on_open)
             self.icon.connect("popup-menu", self.on_popup)
             self.icon.set_visible(True)
             self.have_tray = True
+            self._apply()
         except Exception as e:
             app.log(f"tray icon unavailable ({e!r}) - running as a plain window app")
 
@@ -4095,15 +4179,56 @@ class TrayIcon:
         The tooltip alone is invisible until you hover, so a new message left
         no trace on the icon. The badge variant makes it obvious at a glance.
         """
-        if not self.have_tray:
+        self.unread = int(n or 0)
+        self._apply()
+
+    def set_offline(self, offline, reason=""):
+        """Mark the client as not attached to the daemon.
+
+        This is the state your buddies see as "client offline - messages will
+        be delivered", so it has to be impossible to miss: the running man
+        turns red.
+        """
+        self.offline = bool(offline)
+        self.reason = reason or ""
+        self._apply()
+
+    def _tooltip(self):
+        if self.offline:
+            head = f"{APP_NAME} - OFFLINE"
+            if self.unread:
+                head += f" - {self.unread} unread"
+            lines = [head]
+            if self.reason:
+                lines.append(self.reason)
+            lines.append("Left-click to open Messages")
+            return "\n".join(lines)
+        if self.unread:
+            return f"{APP_NAME} - {self.unread} unread\nLeft-click to open Messages"
+        return f"{APP_NAME} - running\nLeft-click to open Messages"
+
+    def _status_line(self):
+        if self.offline:
+            return f"Status: offline - {self.reason}" if self.reason else "Status: offline"
+        if self.unread:
+            return f"Status: running - {self.unread} unread"
+        return "Status: running"
+
+    def _apply(self):
+        """Put the current state on the icon, the tooltip and the menu."""
+        if not getattr(self, "have_tray", False):
             return
         try:
-            self.icon.set_from_icon_name(tray_icon_name(n > 0))
-            self.icon.set_tooltip_text(
-                f"{APP_NAME} - {n} unread\nLeft-click to open Messages" if n
-                else f"{APP_NAME} - running\nLeft-click to open Messages")
+            self.icon.set_from_icon_name(tray_icon_name(self.unread > 0, self.offline))
+            self.icon.set_tooltip_text(self._tooltip())
         except Exception:
             pass
+        item = getattr(self, "status_item", None)
+        if item is not None:
+            try:
+                item.set_label(self._status_line())
+            except Exception:
+                pass
 
     def is_embedded(self):
         """True only when a real system-tray host adopted the icon.
@@ -4199,6 +4324,9 @@ class AimlessApp:
     """One process: messages window + tray icon + the aimlessd daemon."""
 
     def __init__(self):
+        # How long we were detached before this start - read the log before
+        # this run writes its first line into it.
+        self._detached_gap = detached_gap_seconds()
         self.log = logging.log_fn(app_log_path())
         self.supervisor = DaemonSupervisor()
         self.session = None
@@ -4216,6 +4344,13 @@ class AimlessApp:
         self._connect_show = False
         self._connect_state = {"ssh": "connecting", "daemon": "waiting"}
         self.connect_window = None
+        # Link health: is our client traffic actually landing on the daemon?
+        # If it is not, the daemon advertises us as "client offline" and the
+        # buddies see us as gone. The tray has to say so.
+        self._link_ok = True
+        self._link_reason = ""
+        self._link_timer = None
+        self._link_notified = False
         # Put the app icon in the user's icon theme before anything asks for
         # it - the tray looks the name up when it is created.
         try:
@@ -4264,6 +4399,25 @@ class AimlessApp:
                 return 1
 
         self.tray = TrayIcon(self)
+        # The timers go up BEFORE the window. The unlock dialog is modal and
+        # blocks until the passphrase is typed; with the heartbeat only
+        # started afterwards the daemon saw no client at all while we sat at
+        # the prompt, and the buddies showed us as "client offline" for as
+        # long as the dialog was up.
+        GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGUSR1, self.on_open_signal)
+        GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGTERM, self.quit)
+        GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGINT, self.quit)
+        GLib.timeout_add_seconds(5, self.poll)
+        GLib.timeout_add_seconds(10, self.heartbeat)
+        if self.supervisor.external:
+            self.log(f"external daemon mode - tunnel to {self.supervisor.tunnel.host}")
+            GLib.timeout_add_seconds(20, self.probe_tunnel)
+        # Say right away how long we were away - the buddies saw us as
+        # offline for that whole time.
+        self._announce_detached_gap()
+        # Tell the daemon a client is attached now, not in ten seconds.
+        self.heartbeat()
+
         if self.supervisor.external:
             # Never block startup on the remote daemon: connect in the
             # background and show a status window if it doesn't come up promptly.
@@ -4281,14 +4435,6 @@ class AimlessApp:
             self.log("no window after setup (no usable tray) - exiting for the supervisor to restart")
             return 0
 
-        GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGUSR1, self.on_open_signal)
-        GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGTERM, self.quit)
-        GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGINT, self.quit)
-        GLib.timeout_add_seconds(5, self.poll)
-        GLib.timeout_add_seconds(10, self.heartbeat)
-        if self.supervisor.external:
-            self.log(f"external daemon mode - tunnel to {self.supervisor.tunnel.host}")
-            GLib.timeout_add_seconds(20, self.probe_tunnel)
         self.log(f"app started (pid {os.getpid()}, tray={self.tray.have_tray})")
         return None
 
@@ -4605,22 +4751,33 @@ class AimlessApp:
             t = self.supervisor.tunnel
             if t is not None and not self._tunnel_restarting and not t.is_running():
                 self.log("tunnel: ssh process gone - restarting")
+                # Without the tunnel our traffic never reaches the daemon, so
+                # the buddies see us as offline.
+                self._set_link(False, "the ssh tunnel is down")
                 self._schedule_tunnel_restart()
             return GLib.SOURCE_CONTINUE
         if not self.supervisor.is_running():
             self.log("aimlessd died - restarting")
+            # The daemon is gone: our client traffic is not landing, so the
+            # buddies will see us as offline. Say so right away.
+            self._set_link(False, "the daemon died - restarting")
             try:
                 self.supervisor.ensure(log=self.log)
             except RuntimeError as e:
                 self.log(f"restart failed: {e}")
                 return GLib.SOURCE_CONTINUE
             self.rewatch()
+            self._probe_link()
         return GLib.SOURCE_CONTINUE
 
     def heartbeat(self):
         """Tell our daemon a client is attached, even with no window open. The
         daemon advertises presence to buddies only while this keeps arriving, so
-        a suspended/quit client shows as offline to them."""
+        a suspended/quit client shows as offline to them.
+
+        The outcome is our link health too: if this stops landing, the daemon
+        drops us to "client offline" within half a minute - and the tray has
+        to say so before the buddies notice."""
         if self.quitting:
             return GLib.SOURCE_REMOVE
 
@@ -4629,8 +4786,9 @@ class AimlessApp:
             try:
                 d = DaemonClient(sock_path())
                 d.request("whoami", timeout=3)
+                return True
             except Exception:
-                pass
+                return False
             finally:
                 if d is not None:
                     try:
@@ -4638,8 +4796,95 @@ class AimlessApp:
                     except Exception:
                         pass
 
-        run_async(worker)
+        def done(ok):
+            self._set_link(bool(ok), "the daemon is not answering")
+
+        run_async(worker, on_done=done)
         return GLib.SOURCE_CONTINUE
+
+    # -- link health ------------------------------------------------------
+    def _set_link(self, ok, reason=""):
+        """Record whether our client traffic is landing on the daemon.
+
+        Not ok means the daemon is not hearing us: it will advertise us as
+        "client offline" within 30s, which is what the buddies see. The tray
+        turns red right away; the notification waits out the grace period, so
+        a daemon that restarts in a second does not make noise.
+        """
+        changed = (ok != self._link_ok) or (reason != self._link_reason)
+        self._link_ok = bool(ok)
+        self._link_reason = "" if ok else reason
+        if ok:
+            self._cancel_link_timer()
+            if self._link_notified:
+                self._link_notified = False
+                self._notify("AIMless is back online",
+                             "the daemon is answering again - your buddies can see you")
+        elif self._link_timer is None:
+            self._link_timer = GLib.timeout_add_seconds(LINK_GRACE_SECONDS,
+                                                        self._link_grace_expired)
+        if changed:
+            self._push_tray_state()
+
+    def _cancel_link_timer(self):
+        if self._link_timer is not None:
+            try:
+                GLib.source_remove(self._link_timer)
+            except Exception:
+                pass
+            self._link_timer = None
+
+    def _link_grace_expired(self):
+        """The daemon stayed silent past the grace period - call it offline."""
+        self._link_timer = None
+        if self._link_ok:
+            return GLib.SOURCE_REMOVE
+        self._link_notified = True
+        reason = self._link_reason or "the daemon is not answering"
+        self.log(f"offline - {reason}")
+        self._notify("AIMless is offline",
+                     f"{reason} - your buddies see you as offline")
+        return GLib.SOURCE_REMOVE
+
+    def _push_tray_state(self):
+        tray = getattr(self, "tray", None)
+        if tray is None or not getattr(tray, "have_tray", False):
+            return
+        try:
+            tray.set_offline(not self._link_ok, self._link_reason)
+        except Exception:
+            pass
+
+    def _probe_link(self, reason="the daemon is not answering"):
+        """Ask in the background whether the daemon still hears us."""
+
+        def worker():
+            return self.supervisor._reachable()
+
+        def done(ok):
+            self._set_link(bool(ok), reason)
+
+        run_async(worker, on_done=done)
+
+    def _notify(self, title, body):
+        icon = appicon.OFFLINE_ICON_NAME if not self._link_ok else appicon.ICON_NAME
+        try:
+            desktop_notify(title, body, icon)
+        except Exception:
+            pass
+
+    def _announce_detached_gap(self):
+        """Tell the user how long they were away, if it was long enough to
+        matter: the buddies saw "client offline" for that whole time."""
+        gap = self._detached_gap
+        if not gap or gap < 60:
+            return
+        self.log(f"was detached for {fmt_duration(gap)} before this start")
+        if gap >= DETACHED_NOTICE_SECONDS:
+            self._notify(
+                "AIMless was offline",
+                f"you were detached for {fmt_duration(gap)} - your buddies saw you "
+                "as offline that whole time")
 
     def rewatch(self):
         if not self.session:

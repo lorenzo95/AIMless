@@ -1,6 +1,7 @@
 import os
 import re
 import time
+from datetime import datetime, timedelta
 
 import pytest
 
@@ -1982,6 +1983,212 @@ def test_app_icon_unread_variant_differs():
     plain = appicon.render(32, False).save_to_bufferv("png", [], [])[1]
     unread = appicon.render(32, True).save_to_bufferv("png", [], [])[1]
     assert plain != unread, "the unread badge is not being drawn"
+
+
+def test_app_icon_has_an_offline_variant():
+    """Offline needs its own picture: the running man goes red, so the state
+    cannot be missed."""
+    from aimless import appicon
+
+    if appicon._imports()[0] is None:
+        pytest.skip("cairo is not available")
+    plain = appicon.render(32, False).save_to_bufferv("png", [], [])[1]
+    offline = appicon.render(32, False, True).save_to_bufferv("png", [], [])[1]
+    assert plain != offline, "the offline variant is not being drawn"
+
+    for size in (16, 24, 48):
+        for unread in (False, True):
+            pixbuf = appicon.render(size, unread, True)
+            assert pixbuf is not None
+            assert pixbuf.get_width() == size
+
+
+def test_offline_icon_is_installed_in_the_theme(tmp_path, monkeypatch):
+    """The theme has to carry the offline variant, or the tray falls back to a
+    generic icon and the warning is lost."""
+    from aimless import appicon
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    appicon.install()
+    for name, unread, offline in appicon.variants():
+        assert appicon.has_icon(name), f"{name} is missing from the icon theme"
+
+
+def test_tray_icon_goes_red_when_the_client_is_offline(gtk_app, tmp_path, monkeypatch):
+    """When our client traffic stops landing, the daemon advertises us as
+    'client offline - messages will be delivered'. The tray has to say so."""
+    from aimless import appicon
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    appicon.install()
+
+    tray = gtkui.TrayIcon.__new__(gtkui.TrayIcon)
+    tray.app = None
+    tray.have_tray = True
+    tray.icon = Gtk.StatusIcon()
+
+    tray.set_unread(0)
+    plain = tray.icon.get_icon_name()
+    tray.set_offline(True, "the daemon is not answering")
+    offline = tray.icon.get_icon_name()
+    assert offline != plain, "the tray icon must change when the client is offline"
+    assert offline == appicon.OFFLINE_ICON_NAME
+    tip = tray.icon.get_tooltip_text()
+    assert "OFFLINE" in tip
+    assert "the daemon is not answering" in tip, "the tooltip must say why"
+
+    tray.set_offline(False)
+    assert tray.icon.get_icon_name() == plain, "the icon must go back when we are back"
+
+
+def test_tray_keeps_the_badge_when_offline(gtk_app, tmp_path, monkeypatch):
+    """Offline and unread are two different facts - the icon has to carry
+    both at once."""
+    from aimless import appicon
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    appicon.install()
+
+    tray = gtkui.TrayIcon.__new__(gtkui.TrayIcon)
+    tray.app = None
+    tray.have_tray = True
+    tray.icon = Gtk.StatusIcon()
+
+    tray.set_unread(3)
+    tray.set_offline(True, "the daemon is not answering")
+    assert tray.icon.get_icon_name() == appicon.OFFLINE_UNREAD_ICON_NAME
+    tip = tray.icon.get_tooltip_text()
+    assert "3 unread" in tip and "OFFLINE" in tip
+
+
+def test_tray_menu_shows_the_state(gtk_app):
+    """Right-clicking the tray should say whether we are attached - the
+    tooltip only shows on hover."""
+    tray = gtkui.TrayIcon.__new__(gtkui.TrayIcon)
+    tray.app = None
+    tray.have_tray = True
+    tray.icon = Gtk.StatusIcon()
+    tray.status_item = Gtk.MenuItem(label="Status: running")
+
+    tray.set_offline(True, "the daemon is not answering")
+    assert "offline" in tray.status_item.get_label()
+    tray.set_offline(False)
+    assert "running" in tray.status_item.get_label()
+
+
+def test_link_failure_turns_the_tray_red(tmp_path, monkeypatch):
+    """The app has to tell the tray when the daemon stops hearing us."""
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("AIMLESS_HOME", str(tmp_path / "home"))
+
+    class _StubTray:
+        have_tray = True
+
+        def __init__(self):
+            self.offline = None
+            self.reason = ""
+
+        def set_offline(self, offline, reason=""):
+            self.offline = offline
+            self.reason = reason
+
+    app = gtkui.AimlessApp()
+    tray = _StubTray()
+    app.tray = tray
+
+    app._set_link(False, "the daemon is not answering")
+    assert tray.offline is True, "the tray was not told we are offline"
+    assert "not answering" in tray.reason
+
+    app._set_link(True)
+    assert tray.offline is False, "the tray was not told we are back"
+
+
+def test_offline_is_announced_only_after_the_grace_period(tmp_path, monkeypatch):
+    """A daemon that restarts in a second must not make a fuss - but if it
+    stays silent past the grace period, the user gets told."""
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("AIMLESS_HOME", str(tmp_path / "home"))
+
+    app = gtkui.AimlessApp()
+    told = []
+    app._notify = lambda title, body: told.append((title, body))
+
+    app._set_link(False, "the daemon is not answering")
+    assert told == [], "the notification fired before the grace period"
+
+    app._link_grace_expired()
+    assert told, "going offline silently is exactly the bug we are fixing"
+    assert "offline" in told[0][0].lower()
+
+    # and back online, only if we had announced it
+    app._set_link(True)
+    assert len(told) == 2, "coming back online should be announced too"
+
+
+def test_detached_gap_is_measured_from_the_log(tmp_path):
+    """The app logs its own shutdown, so the gap since that line is the time
+    the buddies saw us as offline."""
+    log = tmp_path / "app.log"
+    then = datetime.now() - timedelta(minutes=42)
+    log.write_text(f"[{then.strftime('%Y-%m-%d %H:%M:%S')}] shutting down - stopping aimlessd\n")
+
+    gap = gtkui.detached_gap_seconds(str(log))
+    assert gap is not None
+    assert 2500 < gap < 2600, f"expected ~42 minutes, got {gap}"
+
+    assert gtkui.detached_gap_seconds(str(tmp_path / "missing.log")) is None
+
+
+def test_detached_gap_needs_a_shutdown_marker(tmp_path):
+    """A run that never logged a shutdown leaves no answer - guessing would
+    tell the user they were away for days while they were actually here."""
+    log = tmp_path / "app.log"
+    then = datetime.now() - timedelta(days=3)
+    log.write_text(f"[{then.strftime('%Y-%m-%d %H:%M:%S')}] app started (pid 1, tray=True)\n")
+
+    assert gtkui.detached_gap_seconds(str(log)) is None
+
+
+def test_heartbeat_starts_before_the_unlock_dialog(tmp_path, monkeypatch):
+    """The unlock dialog is modal and blocks the startup. If the heartbeat
+    only starts after it, the daemon sees no client at all while we sit at
+    the prompt - and the buddies show us as "client offline" that whole time.
+    """
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("AIMLESS_HOME", str(tmp_path / "home"))
+
+    order = []
+    app = gtkui.AimlessApp()
+    app.supervisor.ensure = lambda log=None: None
+    app.supervisor.is_running = lambda: True
+    app._announce_detached_gap = lambda: None
+    app.heartbeat = lambda: order.append("heartbeat")
+    app.open_window = lambda *a, **k: order.append("open_window")
+
+    app._setup(open_window=True)
+    assert order[:2] == ["heartbeat", "open_window"], order
+
+
+def test_startup_announces_a_long_absence(tmp_path, monkeypatch):
+    """Coming back after a long absence has to be said out loud: that is the
+    window in which the buddies saw us as offline."""
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("AIMLESS_HOME", str(tmp_path / "home"))
+
+    app = gtkui.AimlessApp()
+    told = []
+    app._notify = lambda title, body: told.append((title, body))
+
+    app._detached_gap = 42 * 60
+    app._announce_detached_gap()
+    assert told, "a long absence was not announced"
+    assert "42m" in told[0][1]
+
+    told.clear()
+    app._detached_gap = 5
+    app._announce_detached_gap()
+    assert not told, "a five minute gap is not worth a notification"
 
 
 

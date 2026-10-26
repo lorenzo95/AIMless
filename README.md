@@ -129,6 +129,21 @@ Header menu → **Preferences …** (stored as `client/prefs.json` under the dat
 
 The window title and the tray tooltip show the total unread, and the tray icon itself gets a red badge while anything is unread - so a new message is visible without hovering. Sent text shows a delivered tick; files show per-recipient progress (`1/3 delivered` → `Delivered ✓`).
 
+### The tray says whether you are actually online
+
+The daemon keeps running on its own and only advertises you as *present* while a client is attached to it. When no client is attached, your buddies see **"client offline - messages will be delivered"** - the messages still arrive, but you are not reachable in real time. That state is easy to miss, so the tray says it out loud:
+
+| Tray icon | Meaning |
+|---|---|
+| yellow running man | attached - your buddies see you as available |
+| yellow running man + red badge | attached, and something is unread |
+| **red running man** | **not attached** - the daemon is not hearing us; your buddies see you as offline |
+| red running man + red badge | not attached *and* something is unread |
+
+The tooltip says why, the right-click menu shows the same state as a *Status:* line, and a desktop notification fires when you go offline and again when you come back. Going offline is detected from our own traffic to the daemon: if the daemon stops answering for 15 seconds the icon turns red, which is before the daemon itself drops us to "client offline" after 30. The daemon dying, the ssh tunnel dropping and an unreachable daemon all count.
+
+On startup the app also tells you how long you were away - that gap is exactly the window in which your buddies saw you as offline, because the daemon was running without a client attached.
+
 ### Keys & identity
 Header menu → **Keys & Identity …**:
 
@@ -157,6 +172,8 @@ By default the client owns a local daemon; if your machine is off, a message sen
 3. Start aimless as usual. The bottom bar shows the tunnel host (and your node id); the tunnel is monitored and restarted automatically if it drops (e.g. after the laptop wakes).
 
 The daemon holds ciphertext and the node key only - your identity stays on the client. **One client per daemon.**
+
+A daemon-only host has no client attached by design, so from the buddies' side that node shows as *client offline - messages will be delivered* until a client connects over the tunnel. The client-side tray turns red for the same reason when the tunnel drops.
 
 While your client is closed, buddies still see your daemon reachable and messages are delivered and queued for you; once the daemon stops hearing from a client it advertises *"client offline - messages will be delivered"* (within seconds), so nobody waits on a reply. It clears automatically when you reopen aimless.
 
