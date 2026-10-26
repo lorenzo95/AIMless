@@ -2291,6 +2291,61 @@ def test_no_peers_configured_is_not_a_fault(tmp_path, monkeypatch):
     assert app.offline_reason() == ""
 
 
+def test_tray_adoption_is_awaited(tmp_path, monkeypatch):
+    """The XEmbed handshake only completes while the GTK main loop runs, so
+    is_embedded() is false the instant the icon is created. The app must not
+    read that as "there is no tray" - that is what kept the tray from coming
+    up on a fresh login, where the panel is still starting."""
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("AIMLESS_HOME", str(tmp_path / "home"))
+
+    app = gtkui.AimlessApp()
+    seen = []
+
+    class _LateTray:
+        have_tray = True
+
+        def is_embedded(self):
+            seen.append(1)
+            return len(seen) > 3
+
+    app.tray = _LateTray()
+    assert app._wait_for_tray(timeout=5) is True
+    assert len(seen) > 3, "the app gave up before the tray host adopted the icon"
+
+
+def test_startup_does_not_exit_while_the_tray_is_being_adopted(tmp_path, monkeypatch):
+    """The autostart entry fires before the panel is up. The app has to wait
+    for the icon to be adopted instead of exiting right away - otherwise the
+    tray never comes up on a reboot."""
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("AIMLESS_HOME", str(tmp_path / "home"))
+
+    app = gtkui.AimlessApp()
+    app.supervisor.ensure = lambda log=None: None
+    app.supervisor.is_running = lambda: True
+    app._announce_detached_gap = lambda: None
+    app.heartbeat = lambda: None
+
+    state = {"pumps": 0}
+
+    class _LateTray:
+        have_tray = True
+
+        def is_embedded(self):
+            state["pumps"] += 1
+            return state["pumps"] > 2
+
+        def set_offline(self, *a, **k):
+            pass
+
+    monkeypatch.setattr(gtkui, "TrayIcon", lambda app: _LateTray())
+
+    rc = app._setup(open_window=False)
+    assert rc is None, "the app exited instead of waiting for the tray"
+    assert state["pumps"] > 2
+
+
 def test_startup_announces_a_long_absence(tmp_path, monkeypatch):
     """Coming back after a long absence has to be said out loud: that is the
     window in which the buddies saw us as offline."""

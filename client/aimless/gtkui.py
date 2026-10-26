@@ -658,18 +658,57 @@ ISLAND_GRACE_SECONDS = 30
 # being gentle with.
 PEER_CHECK_SECONDS = 15
 
+# How long the app waits for a tray host to adopt the icon before it decides
+# there is no tray. The handshake needs the main loop to run, and on a fresh
+# login the panel is usually not up yet when the autostart entry fires.
+TRAY_ADOPT_SECONDS = 15
+
+# Guards the one-time libnotify setup, which now happens off the main thread.
+_NOTIFY_LOCK = threading.Lock()
+
 # A gap longer than this between two app starts means we were detached for a
 # while - worth telling the user, because that is what the buddies saw.
 DETACHED_NOTICE_SECONDS = 900
 
 
+def notify_init_async():
+    """Connect to the session bus in the background.
+
+    g_bus_get_sync() blocks for a long time when the bus is not up yet, and
+    at login the autostart entry runs early. The app must not stall on that,
+    so the connection is set up on a side thread.
+    """
+    def work():
+        try:
+            gi.require_version("Notify", "0.7")
+            from gi.repository import Notify
+            with _NOTIFY_LOCK:
+                if not Notify.is_initted():
+                    Notify.init("aimless")
+        except Exception:
+            pass
+
+    try:
+        threading.Thread(target=work, daemon=True).start()
+    except Exception:
+        pass
+
+
 def desktop_notify(title, body, icon_name=None):
-    """Pop a desktop notification. Silently does nothing where it is missing."""
+    """Pop a desktop notification.
+
+    Synchronous on purpose: libnotify hands the message to the caller's main
+    context, so it has to be called from the main thread - a side thread
+    sends the request but the daemon never shows it. The session bus is
+    connected by notify_init_async(), so this does not block.
+    """
     try:
         gi.require_version("Notify", "0.7")
         from gi.repository import Notify
         if not Notify.is_initted():
-            Notify.init("aimless")
+            # The bus is not connected yet - the background init is still
+            # working on it. Say nothing rather than block the UI.
+            return False
         note = Notify.Notification.new(title, body, icon_name or appicon.ICON_NAME)
         note.show()
         return True
@@ -4428,9 +4467,13 @@ class AimlessApp:
         if self.supervisor.external:
             self.log(f"external daemon mode - tunnel to {self.supervisor.tunnel.host}")
             GLib.timeout_add_seconds(20, self.probe_tunnel)
-        # Say right away how long we were away - the buddies saw us as
-        # offline for that whole time.
-        self._announce_detached_gap()
+        # Connect to the session bus off the main thread - it can block for
+        # a while when the bus is not up yet.
+        notify_init_async()
+        # Say how long we were away - the buddies saw us as offline for that
+        # whole time. A moment later, so the notification has a bus to go
+        # out on.
+        GLib.timeout_add_seconds(3, self._announce_detached_gap)
         # Tell the daemon a client is attached now, not in ten seconds.
         self.heartbeat()
 
@@ -4447,6 +4490,11 @@ class AimlessApp:
             self._begin_connect(open_window or not self.tray.have_tray)
         elif open_window or not self.tray.have_tray:
             self.open_window()
+        if self._no_window_headless():
+            # The tray host may simply not have adopted the icon yet - the
+            # handshake needs the main loop to run. Give it a moment before
+            # deciding there is no tray at all.
+            self._wait_for_tray()
         if self._no_window_headless():
             self.log("no window after setup (no usable tray) - exiting for the supervisor to restart")
             return 0
@@ -4761,6 +4809,26 @@ class AimlessApp:
             return False
         return self.window is None and not (self.tray is not None and self.tray.is_embedded())
 
+    def _wait_for_tray(self, timeout=TRAY_ADOPT_SECONDS):
+        """Give the tray host time to adopt the icon.
+
+        The XEmbed handshake only completes while the GTK main loop runs, so
+        is_embedded() is false the instant the StatusIcon is created - the
+        app used to read that as "no tray here" and exit right there. On a
+        fresh login the panel is still starting, so the autostart entry hit
+        that every single time and the tray never came up.
+
+        Returns True as soon as a host adopts the icon.
+        """
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            while Gtk.events_pending():
+                Gtk.main_iteration_do(False)
+            if self.tray is not None and self.tray.is_embedded():
+                return True
+            time.sleep(0.05)
+        return False
+
     def poll(self):
         if self.quitting:
             return GLib.SOURCE_REMOVE
@@ -5022,16 +5090,20 @@ class AimlessApp:
 
     def _announce_detached_gap(self):
         """Tell the user how long they were away, if it was long enough to
-        matter: the buddies saw "client offline" for that whole time."""
+        matter: the buddies saw "client offline" for that whole time.
+
+        Runs from a timer, so it returns False to fire only once.
+        """
         gap = self._detached_gap
         if not gap or gap < 60:
-            return
+            return False
         self.log(f"was detached for {fmt_duration(gap)} before this start")
         if gap >= DETACHED_NOTICE_SECONDS:
             self._notify(
                 "AIMless was offline",
                 f"you were detached for {fmt_duration(gap)} - your buddies saw you "
                 "as offline that whole time")
+        return False
 
     def rewatch(self):
         if not self.session:
