@@ -19,7 +19,7 @@ import (
 	"github.com/yggdrasil-network/yggdrasil-go/src/core"
 )
 
-const buildVersion = "aimlessd/0.9.8"
+const buildVersion = "aimlessd/0.9.9"
 
 // protocolVersion identifies the wire format spoken to other daemons. Peers on a
 // different version are ignored rather than misparsed; there is no compat layer.
@@ -44,34 +44,37 @@ type historyMsg struct {
 }
 
 type apiMessage struct {
-	Op        string            `json:"op"`
-	Id        string            `json:"id,omitempty"`
-	Address   string            `json:"address,omitempty"`
-	Key       string            `json:"key,omitempty"`
-	Pid       int               `json:"pid,omitempty"`
-	To        string            `json:"to,omitempty"`
-	From      string            `json:"from,omitempty"`
-	Payload   string            `json:"payload,omitempty"`
-	Bytes     int               `json:"bytes,omitempty"`
-	Seq       uint64            `json:"seq,omitempty"`
-	Ts        int64             `json:"ts,omitempty"`
-	Error     string            `json:"error,omitempty"`
-	Peers     []peerStatus      `json:"peers,omitempty"`
-	PeerList  []string          `json:"peer_list,omitempty"`
-	Added     []string          `json:"added,omitempty"`
-	Removed   []string          `json:"removed,omitempty"`
-	Failed    map[string]string `json:"failed,omitempty"`
-	MTU       int               `json:"mtu,omitempty"`
-	Build     string            `json:"build,omitempty"`
-	Msgs      []historyMsg      `json:"msgs,omitempty"`
-	Oldest    uint64            `json:"oldest,omitempty"`
-	Latest    uint64            `json:"latest,omitempty"`
-	Presence  []presenceEntry   `json:"presence,omitempty"`
-	Blocked   []string          `json:"blocked,omitempty"`
-	Type      string            `json:"type,omitempty"`
-	Transfers []AttachPending   `json:"transfers,omitempty"`
-	Chunks    []attachEntry     `json:"chunks,omitempty"`
-	Tid       string            `json:"tid,omitempty"`
+	Op       string       `json:"op"`
+	Id       string       `json:"id,omitempty"`
+	Address  string       `json:"address,omitempty"`
+	Key      string       `json:"key,omitempty"`
+	Pid      int          `json:"pid,omitempty"`
+	To       string       `json:"to,omitempty"`
+	From     string       `json:"from,omitempty"`
+	Payload  string       `json:"payload,omitempty"`
+	Bytes    int          `json:"bytes,omitempty"`
+	Seq      uint64       `json:"seq,omitempty"`
+	Ts       int64        `json:"ts,omitempty"`
+	Error    string       `json:"error,omitempty"`
+	Peers    []peerStatus `json:"peers,omitempty"`
+	PeerList []string     `json:"peer_list,omitempty"`
+	// DefaultPeers is the built-in list, so the client can offer to restore
+	// it when the configured one is empty or broken.
+	DefaultPeers []string          `json:"default_peers,omitempty"`
+	Added        []string          `json:"added,omitempty"`
+	Removed      []string          `json:"removed,omitempty"`
+	Failed       map[string]string `json:"failed,omitempty"`
+	MTU          int               `json:"mtu,omitempty"`
+	Build        string            `json:"build,omitempty"`
+	Msgs         []historyMsg      `json:"msgs,omitempty"`
+	Oldest       uint64            `json:"oldest,omitempty"`
+	Latest       uint64            `json:"latest,omitempty"`
+	Presence     []presenceEntry   `json:"presence,omitempty"`
+	Blocked      []string          `json:"blocked,omitempty"`
+	Type         string            `json:"type,omitempty"`
+	Transfers    []AttachPending   `json:"transfers,omitempty"`
+	Chunks       []attachEntry     `json:"chunks,omitempty"`
+	Tid          string            `json:"tid,omitempty"`
 }
 
 // apiConn is one client connection.
@@ -199,13 +202,14 @@ func (s *APIServer) dispatch(conn *apiConn, req apiMessage) {
 			out = append(out, peerStatus{URI: uri, Error: reason})
 		}
 		s.replyReq(conn, req, apiMessage{
-			Op:       "status",
-			Address:  s.node.Address.String(),
-			Key:      hex.EncodeToString(s.node.Pub),
-			Peers:    out,
-			PeerList: s.node.ConfiguredPeers(),
-			MTU:      int(s.node.Core.MTU()),
-			Build:    buildVersion,
+			Op:           "status",
+			Address:      s.node.Address.String(),
+			Key:          hex.EncodeToString(s.node.Pub),
+			Peers:        out,
+			PeerList:     s.node.ConfiguredPeers(),
+			DefaultPeers: defaultPeers,
+			MTU:          int(s.node.Core.MTU()),
+			Build:        buildVersion,
 		})
 	case "send":
 		s.handleSend(conn, req)
@@ -476,7 +480,10 @@ func (s *APIServer) savePeers(peers []string) error {
 	if err != nil {
 		return err
 	}
-	list := append([]string(nil), peers...)
+	// An empty list must stay an empty list: "peers": null would read back
+	// as "not set" and fall through to the built-in peers.
+	list := make([]string, 0, len(peers))
+	list = append(list, peers...)
 	cfg.Peers = &list
 	return saveConfig(s.configPath, cfg)
 }

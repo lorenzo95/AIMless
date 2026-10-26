@@ -1003,6 +1003,7 @@ class DaemonSupervisor:
                 "peers_total": len(peers),
                 "peer_list": st.get("peer_list") or [],
                 "peer_details": peers,
+                "default_peers": st.get("default_peers") or [],
                 "build": st.get("build", ""),
                 "mtu": st.get("mtu", 0),
             }
@@ -3132,13 +3133,11 @@ class AimlessWindow(Gtk.Window):
         route_bar.pack_start(self.route_icon, False, False, 0)
         self.route_label = Gtk.Label(label="daemon: starting …")
         route_bar.pack_start(self.route_label, False, False, 0)
-        # The peer count is a button: "peers 4/5" used to be the one number in
-        # the window that said nothing about *which* peer was down.
-        self.peers_button = Gtk.Button(label="peers")
-        self.peers_button.set_relief(Gtk.ReliefStyle.NONE)
-        self.peers_button.set_tooltip_text("Which nodes AIMless reaches the network through")
-        self.peers_button.connect("clicked", self.on_peers)
-        route_bar.pack_start(self.peers_button, False, False, 0)
+        # The peer count is plain text, like the rest of the bar - the peer
+        # manager lives in the menu.
+        self.peers_label = Gtk.Label(label="peers")
+        self.peers_label.set_tooltip_text("Which nodes AIMless reaches the network through")
+        route_bar.pack_start(self.peers_label, False, False, 0)
         self.self_id_label = Gtk.Label()
         self.self_id_label.set_ellipsize(Pango.EllipsizeMode.END)
         route_bar.pack_end(self.self_id_label, False, False, 0)
@@ -3506,7 +3505,7 @@ class AimlessWindow(Gtk.Window):
                 self.route_label.set_tooltip_text(None)
             self.route_label.set_markup(
                 f"<span foreground='{C['away']}'>●  connecting - no Yggdrasil peers yet</span>{tail}")
-            self._set_peers_button(st)
+            self._set_peers_label(st)
             self._set_route_icon(first_icon(
                 "network-wireless-signal-weak-symbolic", "network-wireless-signal-ok-symbolic",
                 "network-idle-symbolic"))
@@ -3518,13 +3517,14 @@ class AimlessWindow(Gtk.Window):
             else:
                 self.route_label.set_tooltip_text(None)
             self.route_label.set_markup(
-                f"<span foreground='{C['online']}'>●  online</span>  -  {st['address']}{tail}")
-            self._set_peers_button(st)
+                f"<span foreground='{C['online']}'>●  online</span>  -  {st['address']}  ·  "
+                f"peers {st['peers_up']}/{st['peers_total']}{tail}")
+            self._set_peers_label(st)
             self._set_route_icon(first_icon(
                 "network-wireless-signal-excellent-symbolic", "applications-internet"))
         self.refresh_self_id()
 
-    def _set_peers_button(self, st):
+    def _set_peers_label(self, st):
         """The peers button: how many peers are up, and the best round trip.
 
         The count alone never said anything, so it says more: how many work,
@@ -3539,13 +3539,13 @@ class AimlessWindow(Gtk.Window):
         broken = [p for p in details if p.get("error")]
         if broken:
             label += f" · {len(broken)} broken"
-        self.peers_button.set_label(label)
+        self.peers_label.set_text(label)
         if broken:
-            self.peers_button.set_tooltip_text(
+            self.peers_label.set_tooltip_text(
                 "A peer could not be used:\n"
                 + "\n".join(f"{p.get('uri')}: {p.get('error')}" for p in broken))
         else:
-            self.peers_button.set_tooltip_text("Which nodes AIMless reaches the network through")
+            self.peers_label.set_tooltip_text("Which nodes AIMless reaches the network through")
 
     # -- Keys & Identity --------------------------------------------------
     def _info_dialog(self, title, text, secondary=None, parent=None):
@@ -4203,9 +4203,10 @@ class PeerListBox(Gtk.Box):
     in the peer manager, where each peer shows its live state.
     """
 
-    def __init__(self, peer_list=None, live=False):
+    def __init__(self, peer_list=None, live=False, defaults=None):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         self.live = live
+        self.defaults = list(defaults or [])
         self._uris = list(peer_list or [])
         self._rows = {}
 
@@ -4225,12 +4226,20 @@ class PeerListBox(Gtk.Box):
         link.connect("clicked", self._on_link)
         self.pack_start(link, False, False, 0)
 
+        self.restore_btn = Gtk.Button(label="Restore the built-in peers")
+        self.restore_btn.set_halign(Gtk.Align.START)
+        self.restore_btn.set_tooltip_text("Put the peers AIMless ships with back")
+        self.restore_btn.connect("clicked", self._on_restore)
+        self.restore_btn.set_no_show_all(True)
+        self.pack_start(self.restore_btn, False, False, 0)
+
         self.status = Gtk.Label(label="")
         self.status.set_xalign(0.0)
         self.status.set_line_wrap(True)
         self.status.get_style_context().add_class("muted")
         self.pack_start(self.status, False, False, 0)
 
+        self.restore_btn.set_visible(bool(self.defaults))
         self._rebuild()
 
     # -- the list ---------------------------------------------------------
@@ -4292,6 +4301,19 @@ class PeerListBox(Gtk.Box):
         if not open_external(peersmod.PEER_LIST_URL):
             self._say(f"could not open a browser - the peer list is at {peersmod.PEER_LIST_URL}")
 
+    def _on_restore(self, _btn):
+        """Put the built-in peers back.
+
+        The way to undo "I deleted them all" - which is exactly how you end up
+        with a node that cannot reach anyone.
+        """
+        if not self.defaults:
+            self._say("this daemon does not report a built-in peer list")
+            return
+        self._uris = list(self.defaults)
+        self._rebuild()
+        self._say("the built-in peers are back - press Save to apply them")
+
     def _rebuild(self):
         for child in self.list_box.get_children():
             self.list_box.remove(child)
@@ -4320,7 +4342,7 @@ class PeerListBox(Gtk.Box):
         self.list_box.show_all()
 
 
-def ask_peers(parent, peer_list, live=False, details=None):
+def ask_peers(parent, peer_list, live=False, details=None, defaults=None):
     """The peers step of the setup wizard, and the peer manager.
 
     In the wizard this is the second step: which nodes we reach the network
@@ -4349,7 +4371,7 @@ def ask_peers(parent, peer_list, live=False, details=None):
     head.set_line_wrap(True)
     box.pack_start(head, False, False, 0)
 
-    plist = PeerListBox(peer_list, live=live)
+    plist = PeerListBox(peer_list, live=live, defaults=defaults)
     box.pack_start(plist, False, False, 0)
 
     dlg.show_all()
@@ -5024,7 +5046,8 @@ class AimlessApp:
             return
         current = st.get("peer_list") or []
         details = st.get("peer_details") or []
-        peers = ask_peers(parent, current, live=True, details=details)
+        peers = ask_peers(parent, current, live=True, details=details,
+                          defaults=st.get("default_peers") or [])
         if peers is None:
             return
         if peers != current:
@@ -5044,7 +5067,7 @@ class AimlessApp:
             self.log("daemon not answering - skipping the peers step")
             return
         current = st.get("peer_list") or []
-        peers = ask_peers(None, current)
+        peers = ask_peers(None, current, defaults=st.get("default_peers") or [])
         if peers is None:
             return
         if peers != current:
@@ -5455,19 +5478,21 @@ class AimlessApp:
             return
         peers = st.get("peers_total", 0)
         up = st.get("peers_up", 0)
-        if peers <= 0:
-            # No peers configured on purpose (-peers none) - not a fault.
-            self._cancel_island_timer()
-            self._set_island(False)
-            return
         if up > 0:
             self._cancel_island_timer()
             self._set_island(False)
             return
-        # No peer up. Give the daemon a moment before crying wolf: a restart
-        # comes up with no peers for a second or two.
+        # No peer is up - so the node cannot reach the overlay and the
+        # buddies cannot reach us. With no peers configured at all there is
+        # nothing to wait for either: the node is simply cut off, and the
+        # tray has to say so (the window already says "connecting").
+        reason = ("no peers configured - AIMless cannot reach the network"
+                  if peers <= 0 else
+                  "no Yggdrasil peers - the daemon is on an island")
+        # Give the daemon a moment before crying wolf: a restart comes up
+        # with no peers for a second or two.
         if force:
-            self._set_island(True, "no Yggdrasil peers - the daemon is on an island")
+            self._set_island(True, reason)
         elif self._island_timer is None and not self._island:
             self._island_timer = GLib.timeout_add_seconds(ISLAND_GRACE_SECONDS,
                                                           self._island_grace_expired)

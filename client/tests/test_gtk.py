@@ -2449,6 +2449,32 @@ def test_daemon_without_peers_is_an_island(tmp_path, monkeypatch):
     assert "offline" in told[0][0].lower()
 
 
+def test_no_peers_at_all_is_an_island_too(tmp_path, monkeypatch):
+    """Deleting every peer leaves the node cut off - nothing to wait for, so
+    the tray has to say so instead of looking happy."""
+    app = _peer_app(tmp_path, monkeypatch, {"peers_total": 0, "peers_up": 0})
+    told = []
+    app._notify = lambda title, body: told.append((title, body))
+
+    app.check_peers()
+    assert _pump(None, lambda: app._island_timer is not None), "the peer check never ran"
+    app._island_grace_expired()
+    assert _pump(None, lambda: app._island), "the island was not confirmed"
+    assert "no peers" in app.offline_reason(), app.offline_reason()
+    assert told, "being cut off must be announced"
+
+
+def test_the_peer_list_can_restore_the_built_in_peers(gtk_app):
+    """Deleting every peer and saving is easy to do by accident - there has to
+    be a way back."""
+    defaults = ["tls://a.example:443", "tcp://b.example:9000"]
+    box = gtkui.PeerListBox([], live=True, defaults=defaults)
+    assert box.get_peers() == []
+
+    box._on_restore(None)
+    assert box.get_peers() == defaults, "the built-in peers were not restored"
+
+
 def test_island_is_cleared_when_the_peers_come_back(tmp_path, monkeypatch):
     """When a peer comes back the island ends - and the recovery is said
     out loud, like every other way back."""
@@ -2496,17 +2522,20 @@ def test_peers_up_means_we_are_online(tmp_path, monkeypatch):
     assert app.offline_reason() == ""
 
 
-def test_no_peers_configured_is_not_a_fault(tmp_path, monkeypatch):
-    """-peers none is a deliberate setup, not an island."""
+def test_no_peers_configured_is_a_fault_too(tmp_path, monkeypatch):
+    """No peers at all used to be "deliberate, not a fault" - but the peer
+    list is editable now, so an empty one is usually an accident, and a node
+    with no peers cannot reach anyone. The tray has to say so."""
     app = _peer_app(tmp_path, monkeypatch, {"peers_total": 0, "peers_up": 0})
     seen = []
-    app._set_island = lambda island, reason="": seen.append(island)
+    app._set_island = lambda island, reason="": seen.append((island, reason))
 
     app.check_peers()
-    assert _pump(None, lambda: seen), "the peer check never finished"
-    assert seen == [False]
-    assert app._island_timer is None
-    assert app.offline_reason() == ""
+    assert _pump(None, lambda: app._island_timer is not None), "the peer check never ran"
+    app._island_grace_expired()
+    assert _pump(None, lambda: seen), "the island was never confirmed"
+    assert seen[-1][0] is True
+    assert "no peers" in seen[-1][1], seen[-1][1]
 
 
 def test_tray_adoption_is_awaited(tmp_path, monkeypatch):

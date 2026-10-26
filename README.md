@@ -103,7 +103,9 @@ The icon is the AIM *running man* - yellow on a blue tile - drawn with Cairo at 
 
 `aimlessd` is an embedded [Yggdrasil](https://yggdrasil-network.github.io/) node, so it needs **peers** to reach anyone else. Out of the box it dials a small set of public ones - five nearby nodes, from five different operators, each pinned to its public key.
 
-The **peers** button in the status bar shows how many are up and how far the fastest one is; click it to open the peer manager, which lists every peer with its live state (up or down, round trip time, traffic, and the reason if one could not be used). While no peer answers, the bar reads *"connecting - no Yggdrasil peers yet"*.
+The status bar shows how many peers are up and how far the fastest one is. **Options → Peers …** opens the peer manager: every peer with its live state (up or down, round trip time, traffic, and the reason if one could not be used), a Remove button each, a field to add one, a **Restore the built-in peers** button, and a link to the public peer list.
+
+While no peer answers, the bar reads *"connecting - no Yggdrasil peers yet"* - and the tray turns red, because a node with no peers cannot be reached by anybody. If you emptied the list by accident, **Restore the built-in peers** puts it back.
 
 ### Where to set them
 

@@ -96,7 +96,10 @@ instantly. That is how this daemon once ended up with no peers at all. So:
 - a peer whose hostname does not resolve is **refused at startup** and shown
   in the peer manager, instead of being counted as a peer;
 - the peer list is editable at runtime (**Options → Peers …**), so a dead peer
-  can be swapped without editing files and restarting;
+  can be swapped without editing files and restarting, and **Restore the
+  built-in peers** puts the curated list back if you empty it by accident;
+- a node with no peers at all cannot reach anyone, so the tray says so (it used
+  to stay quiet, which made an empty peer list look like a working setup);
 - the current public list lives at <https://publicpeers.neilalexander.dev/>,
   and in machine-readable form at
   <https://github.com/Yggdrasil-Unofficial/pubpeers> (`peers.json`). The peer
