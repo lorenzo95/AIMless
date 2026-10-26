@@ -648,6 +648,16 @@ def first_icon(*names):
 # "client offline - messages will be delivered".
 LINK_GRACE_SECONDS = 15
 
+# How long the daemon may have no Yggdrasil peer up before we call the node
+# an island. A restart comes up with no peers for a second or two, so this
+# has to be generous.
+ISLAND_GRACE_SECONDS = 30
+
+# How often we ask the daemon how its peers are doing. Slower than the link
+# check: it is a full status request, and over an ssh tunnel that is worth
+# being gentle with.
+PEER_CHECK_SECONDS = 15
+
 # A gap longer than this between two app starts means we were detached for a
 # while - worth telling the user, because that is what the buddies saw.
 DETACHED_NOTICE_SECONDS = 900
@@ -4350,7 +4360,12 @@ class AimlessApp:
         self._link_ok = True
         self._link_reason = ""
         self._link_timer = None
-        self._link_notified = False
+        # Island: the daemon answers but has no Yggdrasil peer up, so the
+        # node cannot reach the overlay network and nobody can reach us.
+        self._island = False
+        self._island_reason = ""
+        self._island_timer = None
+        self._offline_notified = False
         # Put the app icon in the user's icon theme before anything asks for
         # it - the tray looks the name up when it is created.
         try:
@@ -4409,6 +4424,7 @@ class AimlessApp:
         GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGINT, self.quit)
         GLib.timeout_add_seconds(5, self.poll)
         GLib.timeout_add_seconds(10, self.heartbeat)
+        GLib.timeout_add_seconds(PEER_CHECK_SECONDS, self.check_peers)
         if self.supervisor.external:
             self.log(f"external daemon mode - tunnel to {self.supervisor.tunnel.host}")
             GLib.timeout_add_seconds(20, self.probe_tunnel)
@@ -4506,6 +4522,9 @@ class AimlessApp:
             win, self.connect_window = self.connect_window, None
             win.destroy()
         self.log(f"connected to remote daemon ({self.supervisor.tunnel.host})")
+        # The tray was red while we were connecting - clear it now rather
+        # than waiting for the next heartbeat.
+        self._probe_link()
         if self._connect_show or not self.tray.have_tray:
             self.open_window()
 
@@ -4797,12 +4816,27 @@ class AimlessApp:
                         pass
 
         def done(ok):
-            self._set_link(bool(ok), "the daemon is not answering")
+            if ok:
+                self._set_link(True)
+            elif getattr(self, "_awaiting_connect", False):
+                # Still bringing the tunnel up - the connect window says so,
+                # so do not cry wolf before we even tried.
+                self._set_link(False, "connecting to the remote daemon")
+            else:
+                self._set_link(False, "the daemon is not answering")
 
         run_async(worker, on_done=done)
         return GLib.SOURCE_CONTINUE
 
     # -- link health ------------------------------------------------------
+    def offline_reason(self):
+        """Why the buddies cannot reach us right now ("" when they can)."""
+        if not self._link_ok:
+            return self._link_reason or "the daemon is not answering"
+        if self._island:
+            return self._island_reason or "the daemon has no Yggdrasil peers"
+        return ""
+
     def _set_link(self, ok, reason=""):
         """Record whether our client traffic is landing on the daemon.
 
@@ -4816,15 +4850,56 @@ class AimlessApp:
         self._link_reason = "" if ok else reason
         if ok:
             self._cancel_link_timer()
-            if self._link_notified:
-                self._link_notified = False
-                self._notify("AIMless is back online",
-                             "the daemon is answering again - your buddies can see you")
-        elif self._link_timer is None:
-            self._link_timer = GLib.timeout_add_seconds(LINK_GRACE_SECONDS,
-                                                        self._link_grace_expired)
+            if not self._island:
+                self._announce_online()
+        else:
+            # A daemon we cannot talk to says nothing about its peers - drop
+            # the island state, the louder problem wins.
+            self._set_island(False)
+            # While the tunnel is still coming up we are not offline, we are
+            # connecting - the connect window says so.
+            if (self._link_timer is None
+                    and not getattr(self, "_awaiting_connect", False)):
+                self._link_timer = GLib.timeout_add_seconds(LINK_GRACE_SECONDS,
+                                                            self._link_grace_expired)
         if changed:
             self._push_tray_state()
+
+    def _set_island(self, island, reason=""):
+        """The daemon answers, but it has no Yggdrasil peer up.
+
+        That is an island: the node cannot reach the overlay network, so
+        nobody can reach it either. The buddies see us as offline even though
+        the daemon is right there answering.
+        """
+        changed = (island != self._island) or (reason != self._island_reason)
+        self._island = bool(island)
+        self._island_reason = reason if island else ""
+        if not island:
+            self._cancel_island_timer()
+        if island:
+            self._announce_offline(self._island_reason)
+        elif self._link_ok:
+            self._announce_online()
+        if changed:
+            self._push_tray_state()
+
+    def _announce_offline(self, reason):
+        """Say it once: the buddies cannot reach us."""
+        if self._offline_notified:
+            return
+        self._offline_notified = True
+        self.log(f"offline - {reason}")
+        self._notify("AIMless is offline",
+                     f"{reason} - your buddies see you as offline")
+
+    def _announce_online(self):
+        """The other half of the announcement: we are reachable again."""
+        if not self._offline_notified:
+            return
+        self._offline_notified = False
+        self._notify("AIMless is back online",
+                     "the daemon is answering again - your buddies can see you")
 
     def _cancel_link_timer(self):
         if self._link_timer is not None:
@@ -4839,19 +4914,91 @@ class AimlessApp:
         self._link_timer = None
         if self._link_ok:
             return GLib.SOURCE_REMOVE
-        self._link_notified = True
-        reason = self._link_reason or "the daemon is not answering"
-        self.log(f"offline - {reason}")
-        self._notify("AIMless is offline",
-                     f"{reason} - your buddies see you as offline")
+        if getattr(self, "_awaiting_connect", False):
+            # Still connecting to the remote daemon - not an outage yet.
+            return GLib.SOURCE_REMOVE
+        self._announce_offline(self._link_reason or "the daemon is not answering")
         return GLib.SOURCE_REMOVE
+
+    def _cancel_island_timer(self):
+        if self._island_timer is not None:
+            try:
+                GLib.source_remove(self._island_timer)
+            except Exception:
+                pass
+            self._island_timer = None
+
+    def _island_grace_expired(self):
+        """Re-check the peers before crying wolf.
+
+        The daemon may have come back - with its peers - while the timer ran.
+        A fresh status request decides, not the old reading.
+        """
+        self._island_timer = None
+        if not self._link_ok:
+            return GLib.SOURCE_REMOVE
+        self._fetch_peers(force=True)
+        return GLib.SOURCE_REMOVE
+
+    def check_peers(self):
+        """Watch the daemon's Yggdrasil peers.
+
+        The daemon answering says nothing about whether the node is on the
+        network: a daemon with no peer up cannot reach the overlay, so the
+        buddies cannot reach us - while everything on this side looks fine.
+        That is the "no peers" failure, and the tray has to show it.
+        """
+        if self.quitting:
+            return GLib.SOURCE_REMOVE
+        if not self._link_ok:
+            # The daemon is not answering at all - that is the louder problem.
+            return GLib.SOURCE_CONTINUE
+        self._fetch_peers()
+        return GLib.SOURCE_CONTINUE
+
+    def _fetch_peers(self, force=False):
+        """Ask the daemon how its peers are doing."""
+
+        def worker():
+            return self.supervisor.status()
+
+        def done(st):
+            self._apply_peers(st, force)
+
+        run_async(worker, on_done=done)
+
+    def _apply_peers(self, st, force=False):
+        """Turn a peer reading into the island state."""
+        if not st:
+            # The status request itself failed - the link check owns that
+            # case, and guessing here would clear a real island.
+            return
+        peers = st.get("peers_total", 0)
+        up = st.get("peers_up", 0)
+        if peers <= 0:
+            # No peers configured on purpose (-peers none) - not a fault.
+            self._cancel_island_timer()
+            self._set_island(False)
+            return
+        if up > 0:
+            self._cancel_island_timer()
+            self._set_island(False)
+            return
+        # No peer up. Give the daemon a moment before crying wolf: a restart
+        # comes up with no peers for a second or two.
+        if force:
+            self._set_island(True, "no Yggdrasil peers - the daemon is on an island")
+        elif self._island_timer is None and not self._island:
+            self._island_timer = GLib.timeout_add_seconds(ISLAND_GRACE_SECONDS,
+                                                          self._island_grace_expired)
 
     def _push_tray_state(self):
         tray = getattr(self, "tray", None)
         if tray is None or not getattr(tray, "have_tray", False):
             return
+        reason = self.offline_reason()
         try:
-            tray.set_offline(not self._link_ok, self._link_reason)
+            tray.set_offline(bool(reason), reason)
         except Exception:
             pass
 
@@ -4867,7 +5014,7 @@ class AimlessApp:
         run_async(worker, on_done=done)
 
     def _notify(self, title, body):
-        icon = appicon.OFFLINE_ICON_NAME if not self._link_ok else appicon.ICON_NAME
+        icon = appicon.ICON_NAME if not self.offline_reason() else appicon.OFFLINE_ICON_NAME
         try:
             desktop_notify(title, body, icon)
         except Exception:

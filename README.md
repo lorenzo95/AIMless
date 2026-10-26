@@ -140,7 +140,21 @@ The daemon keeps running on its own and only advertises you as *present* while a
 | **red running man** | **not attached** - the daemon is not hearing us; your buddies see you as offline |
 | red running man + red badge | not attached *and* something is unread |
 
-The tooltip says why, the right-click menu shows the same state as a *Status:* line, and a desktop notification fires when you go offline and again when you come back. Going offline is detected from our own traffic to the daemon: if the daemon stops answering for 15 seconds the icon turns red, which is before the daemon itself drops us to "client offline" after 30. The daemon dying, the ssh tunnel dropping and an unreachable daemon all count.
+The tooltip says why, the right-click menu shows the same state as a *Status:* line, and a desktop notification fires when you go offline and again when you come back. Going offline is detected from our own traffic to the daemon: if the daemon stops answering for 15 seconds the icon turns red, which is before the daemon itself drops us to "client offline" after 30.
+
+Two different things can break, and both end up on the same red icon with a different reason:
+
+| What broke | How we notice | The reason it shows |
+|---|---|---|
+| The app cannot reach the daemon | our heartbeat stops landing | *the daemon is not answering* |
+| The daemon died | the supervisor notices and restarts it | *the daemon died - restarting* |
+| The ssh tunnel is down (remote mode) | the tunnel process is gone | *the ssh tunnel is down* |
+| The tunnel is up but the remote daemon is not | our heartbeat stops landing | *the daemon is not answering* |
+| The daemon is alive but has **no Yggdrasil peer up** | the daemon's peer list | *no Yggdrasil peers - the daemon is on an island* |
+
+The last one is the subtle one: the daemon answers, the app is happy, the window looks fine - and the node still cannot reach the overlay network, so nobody can reach you. A daemon with peers configured and none of them up is an island; a daemon started with `-peers none` has no peers *by choice* and is left alone.
+
+In remote (ssh) mode the app talks to the remote daemon through the tunnel's local socket, so the same checks apply to the remote host - the tunnel dropping and the remote daemon losing its peers are both caught. While the tunnel is still coming up the app is *connecting*, not offline, and says so instead of raising a false alarm.
 
 On startup the app also tells you how long you were away - that gap is exactly the window in which your buddies saw you as offline, because the daemon was running without a client attached.
 

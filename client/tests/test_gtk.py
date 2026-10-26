@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import time
@@ -2168,6 +2169,126 @@ def test_heartbeat_starts_before_the_unlock_dialog(tmp_path, monkeypatch):
 
     app._setup(open_window=True)
     assert order[:2] == ["heartbeat", "open_window"], order
+
+
+def _peer_app(tmp_path, monkeypatch, status):
+    """An app whose daemon reports a fixed status."""
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("AIMLESS_HOME", str(tmp_path / "home"))
+    app = gtkui.AimlessApp()
+    app.supervisor.status = lambda: status
+    app._link_ok = True
+    return app
+
+
+def test_remote_mode_talks_through_the_tunnel(tmp_path, monkeypatch):
+    """In remote mode the app must reach the daemon through the tunnel's local
+    socket - a local daemon socket is not there, and everything the app says
+    about our reachability would be about the wrong thing."""
+    home = tmp_path / "home"
+    (home / "client").mkdir(parents=True)
+    monkeypatch.setenv("AIMLESS_HOME", str(home))
+    tunnel_sock = str(tmp_path / "tunnel.sock")
+    (home / "client" / "prefs.json").write_text(json.dumps({
+        "remote": {"host": "user@host", "socket": "/remote/api.sock",
+                   "local_socket": tunnel_sock},
+    }))
+
+    assert gtkui.sock_path() == tunnel_sock, "the app would talk to a local daemon instead"
+    assert gtkui.tunnel.remote_config()["host"] == "user@host"
+
+
+def test_connecting_to_the_remote_daemon_is_not_offline(tmp_path, monkeypatch):
+    """Bringing the tunnel up is not being offline - the connect window says
+    that already, and the tray must not announce a false alarm."""
+    app = _peer_app(tmp_path, monkeypatch, {"peers_total": 5, "peers_up": 5})
+    told = []
+    app._notify = lambda title, body: told.append((title, body))
+    app._awaiting_connect = True
+
+    app._set_link(False, "connecting to the remote daemon")
+    app._link_grace_expired()
+    assert not told, "connecting must not be announced as offline"
+    assert app._link_timer is None, "no offline timer while we are still connecting"
+
+
+def test_daemon_without_peers_is_an_island(tmp_path, monkeypatch):
+    """The daemon answering says nothing about the network. No peer up means
+    the node cannot reach the overlay - so nobody can reach us either, while
+    everything on this side looks perfectly fine."""
+    app = _peer_app(tmp_path, monkeypatch, {"peers_total": 5, "peers_up": 0})
+    told = []
+    app._notify = lambda title, body: told.append((title, body))
+
+    app.check_peers()
+    assert _pump(None, lambda: app._island_timer is not None), "the peer check never ran"
+    # Not an island yet - a restarting daemon has no peers for a moment.
+    assert app.offline_reason() == ""
+
+    app._island_grace_expired()
+    assert _pump(None, lambda: "island" in app.offline_reason()), "the island was not confirmed"
+    assert told, "an island must be announced"
+    assert "offline" in told[0][0].lower()
+
+
+def test_island_is_cleared_when_the_peers_come_back(tmp_path, monkeypatch):
+    """When a peer comes back the island ends - and the recovery is said
+    out loud, like every other way back."""
+    app = _peer_app(tmp_path, monkeypatch, {"peers_total": 5, "peers_up": 0})
+    told = []
+    app._notify = lambda title, body: told.append((title, body))
+
+    app._set_island(True, "no Yggdrasil peers - the daemon is on an island")
+    assert "island" in app.offline_reason()
+    assert told, "an island must be announced"
+
+    app.supervisor.status = lambda: {"peers_total": 5, "peers_up": 3}
+    app.check_peers()
+    assert _pump(None, lambda: not app._island), "the island was not cleared"
+    assert app.offline_reason() == ""
+    assert len(told) == 2, "coming back must be announced too"
+
+
+def test_island_grace_rechecks_before_announcing(tmp_path, monkeypatch):
+    """The reading that started the timer may be stale - the expiry asks the
+    daemon again before it cries wolf."""
+    app = _peer_app(tmp_path, monkeypatch, {"peers_total": 5, "peers_up": 0})
+    app.check_peers()
+    assert _pump(None, lambda: app._island_timer is not None), "the peer check never ran"
+
+    # the daemon came back with its peers while the timer ran
+    app.supervisor.status = lambda: {"peers_total": 5, "peers_up": 4}
+    seen = []
+    app._set_island = lambda island, reason="": seen.append(island)
+    app._island_grace_expired()
+    assert _pump(None, lambda: seen), "the expiry must ask the daemon again"
+    assert seen == [False], "a daemon that came back must not be called an island"
+
+
+def test_peers_up_means_we_are_online(tmp_path, monkeypatch):
+    """Peers are up: the node is on the network and the tray stays yellow."""
+    app = _peer_app(tmp_path, monkeypatch, {"peers_total": 5, "peers_up": 4})
+    seen = []
+    app._set_island = lambda island, reason="": seen.append(island)
+
+    app.check_peers()
+    assert _pump(None, lambda: seen), "the peer check never finished"
+    assert seen == [False]
+    assert app._island_timer is None
+    assert app.offline_reason() == ""
+
+
+def test_no_peers_configured_is_not_a_fault(tmp_path, monkeypatch):
+    """-peers none is a deliberate setup, not an island."""
+    app = _peer_app(tmp_path, monkeypatch, {"peers_total": 0, "peers_up": 0})
+    seen = []
+    app._set_island = lambda island, reason="": seen.append(island)
+
+    app.check_peers()
+    assert _pump(None, lambda: seen), "the peer check never finished"
+    assert seen == [False]
+    assert app._island_timer is None
+    assert app.offline_reason() == ""
 
 
 def test_startup_announces_a_long_absence(tmp_path, monkeypatch):
