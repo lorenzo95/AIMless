@@ -30,19 +30,34 @@ func acquireLock(datadir string) error {
 	return nil
 }
 
-// defaultPeers are public Yggdrasil nodes used when the datadir has no
-// config.json. Public peers go offline and their DNS records get parked
-// (the hostname resolves to 0.0.0.0), so this list needs rotating - check
-// https://publicpeers.neilalexander.dev/ for the current set.
+// defaultPeers are the public Yggdrasil nodes we fall back on when the
+// datadir has no config.json.
+//
+// They are picked by measurement, not by copying a list: each one was dialled
+// from this machine and its round-trip time recorded, so the set is close by
+// (39-60 ms), comes from five different operators, and every entry is pinned
+// with ?key= - the peer must present that public key, so an IP that gets
+// reassigned cannot pass itself off as the node we meant to reach.
+//
+// A public peer list rots: operators go away and their DNS records get
+// parked. That is what made this daemon unreachable once already (it dialled
+// 0.0.0.0 and called it a peer). So:
+//   - peers whose hostname does not resolve are refused at startup, and the
+//     client shows why instead of counting them;
+//   - the peer list is editable at runtime from the client, so a dead peer
+//     can be swapped without editing files and restarting;
+//   - the current public list lives at https://publicpeers.neilalexander.dev/
+//     and in machine-readable form at
+//     https://github.com/Yggdrasil-Unofficial/pubpeers (peers.json).
 //
 // Users are not stuck with these: daemon/config.json {"peers": [...]} overrides
 // them entirely, and aimlessd -peers takes a comma-separated list.
 var defaultPeers = []string{
-	"tls://23.184.48.86:1443",
-	"tls://31.22.111.195:32000",
-	"tls://192.3.13.16:8118",
-	"tls://5.252.118.13:443",
-	"tls://109.176.250.101:65534",
+	"tls://ca.us.ygg.informatics.coop:443?key=0000000023fc6ffb62afb79448aefb0943df2e4472cf08bd489f5407378300a2",
+	"tcp://ip4.nerdvm.mywire.org:8080?key=00000000c61d731961a290d127cd3fc03a4c5f3f35b9083559d4c81d48d65854",
+	"tls://ygg8.mk16.de:1338?key=0000000b0683e38d8cb3085cfbf217edf0f0b2de76bb5ac7f02a94cd42a3fed9",
+	"tcp://no0.yggdrasil.netralex.com:65533?key=f4b9fe4f9923834b1c20f84e13b14d90ecde443f78613ec54cf484eea6880fea",
+	"tls://nl1.route172.de:443?key=000000002643ae27bad63e2a81f1d30554ce9ea634f5990062a9e079e23593cd",
 }
 
 const defaultInboxCapacity = 50
@@ -53,9 +68,26 @@ const defaultRetryInterval = 2 * time.Second
 
 const defaultProbeInterval = 15 * time.Second
 
+// configFile is the daemon's config.json.
+//
+// Peers is a pointer so that "peers" being absent (use the built-in list) and
+// "peers" being an empty list (no peers at all) are different things - the
+// same distinction the -peers flag makes with "none".
 type configFile struct {
-	Peers  []string `json:"peers"`
-	Listen []string `json:"listen"`
+	Peers  *[]string `json:"peers,omitempty"`
+	Listen []string  `json:"listen,omitempty"`
+}
+
+func saveConfig(path string, cfg *configFile) error {
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, append(data, '\n'), 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 func loadConfig(path string) (*configFile, error) {
@@ -108,7 +140,10 @@ func run(datadir, apiPath, peersFlag, listenFlag string, retryInterval, probeInt
 	if err != nil {
 		return err
 	}
-	peers := cfg.Peers
+	var peers []string
+	if cfg.Peers != nil {
+		peers = *cfg.Peers
+	}
 	if peersFlag != "" {
 		if peersFlag == "none" {
 			peers = nil
@@ -116,7 +151,7 @@ func run(datadir, apiPath, peersFlag, listenFlag string, retryInterval, probeInt
 			peers = strings.Split(peersFlag, ",")
 		}
 	}
-	if len(peers) == 0 && peersFlag != "none" {
+	if peers == nil && peersFlag != "none" {
 		peers = defaultPeers
 	}
 	listenURLs := cfg.Listen
@@ -147,7 +182,7 @@ func run(datadir, apiPath, peersFlag, listenFlag string, retryInterval, probeInt
 	if apiPath == "" {
 		apiPath = filepath.Join(datadir, "api.sock")
 	}
-	api, err := NewAPIServer(node, mail, presence, apiPath)
+	api, err := NewAPIServer(node, mail, presence, apiPath, filepath.Join(datadir, "config.json"))
 	if err != nil {
 		return err
 	}

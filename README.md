@@ -53,6 +53,15 @@ Requires Linux, `python3` with `pynacl`, and the GTK stack (`python3-gi`, `gir1.
 
 The taskbar and tray icon is drawn with cairo, so `python3-cairo` (or `pip install aimless-client[gui]`) is needed for the running-man icon. Without it the app still runs, but the taskbar falls back to a generic icon and the app log says so.
 
+### First run
+
+Two steps, both in the window:
+
+1. **Your identity.** No identity on this machine yet: create one (a passphrase that protects your keys, plus a screen name) or restore a backup you exported earlier.
+2. **Your peers.** AIMless reaches the network through public peers. The built-in ones are nearby and checked, so you can keep them; the step also links to the current public list if you want to add one of your own. Skipping it is fine - the built-in list is already in place.
+
+After that it is unlock + tray + window, and the peers can be changed any time from **Options → Peers …**.
+
 The autostart entry runs `aimless tray` at login, and a login entry fires *before* the panel is up - so the app waits up to 15 seconds for a tray host to adopt its icon before it decides there is no tray. Without that wait it used to exit immediately, and the tray never came up after a reboot. `aimless autostart` (re)writes the entry; check it with `cat ~/.config/autostart/aimless-tray.desktop` if the tray is missing after a login.
 
 The autostarted app is **locked** - it starts without asking for your passphrase. It still tells you when a message arrives (badge, tooltip and a notification), it just cannot read it until you click the tray icon and unlock.
@@ -92,13 +101,16 @@ The icon is the AIM *running man* - yellow on a blue tile - drawn with Cairo at 
 
 ## Peers
 
-`aimlessd` is an embedded [Yggdrasil](https://yggdrasil-network.github.io/) node, so it needs **peers** to reach anyone else. Out of the box it dials a small set of public ones. The status bar shows `peers N/M` (N up of M configured) and reads *"connecting - no Yggdrasil peers yet"* while none of them answer.
+`aimlessd` is an embedded [Yggdrasil](https://yggdrasil-network.github.io/) node, so it needs **peers** to reach anyone else. Out of the box it dials a small set of public ones - five nearby nodes, from five different operators, each pinned to its public key.
+
+The **peers** button in the status bar shows how many are up and how far the fastest one is; click it to open the peer manager, which lists every peer with its live state (up or down, round trip time, traffic, and the reason if one could not be used). While no peer answers, the bar reads *"connecting - no Yggdrasil peers yet"*.
 
 ### Where to set them
 
 | Where | How | Notes |
 |---|---|---|
-| `daemon/config.json` | `"peers": [...]` | The normal way - persists across restarts. |
+| **The app** | **Options → Peers …** | Add or remove one, see how each is doing. Writes `config.json` and applies the change right away - no restart. |
+| `daemon/config.json` | `"peers": [...]` | The same file the app writes. |
 | `aimlessd -peers` | `-peers uri1,uri2` | Overrides the config file entirely (it replaces, never merges). `-peers none` runs with no peers at all. |
 | Built-in | `defaultPeers` in `daemon/main.go` | Used when neither of the above is set. |
 
@@ -106,18 +118,20 @@ The icon is the AIM *running man* - yellow on a blue tile - drawn with Cairo at 
 
 ### Using your own peers
 
-Public peers go offline, and when their domain lapses the DNS record is parked - the hostname resolves to `0.0.0.0`, which connects to localhost and is refused instantly. The live list, refreshed hourly, is at <https://publicpeers.neilalexander.dev/>; take a few nearby ones with good uptime.
+Public peers go offline, and when their domain lapses the DNS record is parked - the hostname resolves to `0.0.0.0`, which connects to localhost and is refused instantly. The live list, refreshed hourly, is at <https://publicpeers.neilalexander.dev/>; take a few nearby ones with good uptime. The peer manager has a **Browse the public peer list** button, so you do not have to go looking for the URL.
+
+Add them in the app (**Options → Peers …**), or write them yourself:
 
 ```json
 {
   "peers": [
-    "tls://23.184.48.86:1443",
-    "tls://31.22.111.195:32000"
+    "tls://ca.us.ygg.informatics.coop:443?key=0000000023fc6ffb62afb79448aefb0943df2e4472cf08bd489f5407378300a2",
+    "tcp://ip4.nerdvm.mywire.org:8080?key=00000000c61d731961a290d127cd3fc03a4c5f3f35b9083559d4c81d48d65854"
   ]
 }
 ```
 
-Write it to `daemon/config.json`, then restart aimless (`aimless stop`, reopen). The status bar should go green with `peers N/M`.
+The `?key=` option pins the peer's public key: the peer has to present exactly that key, so an IP that gets reassigned cannot pass itself off as the node you meant to reach. Keep the list short - every extra peer is another node you relay traffic for.
 
 > Routing to another AIMless node takes a moment the first time - Yggdrasil refreshes its routing table every few minutes, so a message to a never-before-seen peer can take a minute or two to find its way. Queued messages retry on their own, so nothing is lost while the route is being worked out.
 

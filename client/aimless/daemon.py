@@ -13,6 +13,7 @@ EVENT_OPS = ("recv", "acked")
 
 RESPONSE_MAP = {
     "send": "queued",
+    "setpeers": "peers",
     "sendfile": "queued",
     "watch": "watching",
     "setstatus": "statusset",
@@ -166,13 +167,16 @@ class DaemonClient:
                 if msg.get("op") in EVENT_OPS:
                     self.events.put(msg)
                     continue
+                if msg.get("op") == "error":
+                    # An error reply is the answer, not a stray event: without
+                    # this the client waits for the timeout and reports
+                    # "timeout waiting for response" instead of the reason.
+                    raise DaemonError(msg.get("error", "unknown error"))
                 if msg.get("op") != expected:
                     self._stash.append(msg)
                     continue
                 if msg.get("id"):
                     self._multiplex = True
-                if msg.get("op") == "error":
-                    raise DaemonError(msg.get("error", "unknown error"))
                 return msg
 
     def _request_multiplex(self, op: str, timeout: float, fields: dict) -> dict:
@@ -292,6 +296,14 @@ class Client:
 
     def pending_attachments(self, node_hex: str) -> list:
         return self.daemon.request("pendingattachments", **{"from": node_hex}, timeout=5).get("transfers", [])
+
+    def set_peers(self, peers: list) -> dict:
+        """Replace the daemon's peer list at runtime.
+
+        The daemon validates the URIs, writes them to its config.json and
+        applies the change, so the list survives a restart.
+        """
+        return self.daemon.request("setpeers", peer_list=list(peers), timeout=20)
 
     def fetch_attachment(self, node_hex: str, tid: str) -> list:
         return self.daemon.request("fetchattachment", **{"from": node_hex}, tid=tid, timeout=30).get("chunks", [])

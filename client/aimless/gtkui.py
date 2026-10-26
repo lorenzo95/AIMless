@@ -35,6 +35,7 @@ from . import crypto, protocol, logging, paths
 from . import tunnel
 from . import appicon
 from . import pending
+from . import peers as peersmod
 from . import keys as keysmod
 from .daemon import DaemonClient, Client, DaemonError
 from .service import Sync
@@ -1000,6 +1001,8 @@ class DaemonSupervisor:
                 "pubkey": who.get("key", ""),
                 "peers_up": sum(1 for p in peers if p.get("up")),
                 "peers_total": len(peers),
+                "peer_list": st.get("peer_list") or [],
+                "peer_details": peers,
                 "build": st.get("build", ""),
                 "mtu": st.get("mtu", 0),
             }
@@ -3129,6 +3132,13 @@ class AimlessWindow(Gtk.Window):
         route_bar.pack_start(self.route_icon, False, False, 0)
         self.route_label = Gtk.Label(label="daemon: starting …")
         route_bar.pack_start(self.route_label, False, False, 0)
+        # The peer count is a button: "peers 4/5" used to be the one number in
+        # the window that said nothing about *which* peer was down.
+        self.peers_button = Gtk.Button(label="peers")
+        self.peers_button.set_relief(Gtk.ReliefStyle.NONE)
+        self.peers_button.set_tooltip_text("Which nodes AIMless reaches the network through")
+        self.peers_button.connect("clicked", self.on_peers)
+        route_bar.pack_start(self.peers_button, False, False, 0)
         self.self_id_label = Gtk.Label()
         self.self_id_label.set_ellipsize(Pango.EllipsizeMode.END)
         route_bar.pack_end(self.self_id_label, False, False, 0)
@@ -3154,6 +3164,9 @@ class AimlessWindow(Gtk.Window):
         keys_item = Gtk.MenuItem(label="Keys & Identity …")
         keys_item.connect("activate", self.on_keys)
         options_menu.append(keys_item)
+        peers_item = Gtk.MenuItem(label="Peers …")
+        peers_item.connect("activate", self.on_peers)
+        options_menu.append(peers_item)
         prefs_item = Gtk.MenuItem(label="Preferences …")
         prefs_item.connect("activate", self.on_preferences)
         options_menu.append(prefs_item)
@@ -3493,6 +3506,7 @@ class AimlessWindow(Gtk.Window):
                 self.route_label.set_tooltip_text(None)
             self.route_label.set_markup(
                 f"<span foreground='{C['away']}'>●  connecting - no Yggdrasil peers yet</span>{tail}")
+            self._set_peers_button(st)
             self._set_route_icon(first_icon(
                 "network-wireless-signal-weak-symbolic", "network-wireless-signal-ok-symbolic",
                 "network-idle-symbolic"))
@@ -3504,11 +3518,34 @@ class AimlessWindow(Gtk.Window):
             else:
                 self.route_label.set_tooltip_text(None)
             self.route_label.set_markup(
-                f"<span foreground='{C['online']}'>●  online</span>  -  {st['address']}  ·  "
-                f"peers {st['peers_up']}/{st['peers_total']}{tail}")
+                f"<span foreground='{C['online']}'>●  online</span>  -  {st['address']}{tail}")
+            self._set_peers_button(st)
             self._set_route_icon(first_icon(
                 "network-wireless-signal-excellent-symbolic", "applications-internet"))
         self.refresh_self_id()
+
+    def _set_peers_button(self, st):
+        """The peers button: how many peers are up, and the best round trip.
+
+        The count alone never said anything, so it says more: how many work,
+        and how far away the fastest one is.
+        """
+        details = st.get("peer_details") or []
+        up = [p for p in details if p.get("up")]
+        label = f"peers {st['peers_up']}/{st['peers_total']}"
+        latencies = [p.get("latency_ms") for p in up if p.get("latency_ms")]
+        if latencies:
+            label += f" · {min(latencies)} ms"
+        broken = [p for p in details if p.get("error")]
+        if broken:
+            label += f" · {len(broken)} broken"
+        self.peers_button.set_label(label)
+        if broken:
+            self.peers_button.set_tooltip_text(
+                "A peer could not be used:\n"
+                + "\n".join(f"{p.get('uri')}: {p.get('error')}" for p in broken))
+        else:
+            self.peers_button.set_tooltip_text("Which nodes AIMless reaches the network through")
 
     # -- Keys & Identity --------------------------------------------------
     def _info_dialog(self, title, text, secondary=None, parent=None):
@@ -3565,6 +3602,14 @@ class AimlessWindow(Gtk.Window):
         except Exception:
             pass
         self.messages.sync_sidebar()
+
+    def on_peers(self, *_):
+        """The peer manager: which nodes we reach the network through, and how
+        each one is doing."""
+        app = getattr(self, "app_ref", None)
+        if app is None:
+            return
+        app.show_peers(self)
 
     def on_keys(self, *_):
         st = self.supervisor.status() or {}
@@ -4102,7 +4147,7 @@ def ask_create_identity(parent):
 
     Returns None (cancelled / empty), ("__mismatch__",), ("__import__",) or
     (passphrase, screen)."""
-    dlg = Gtk.Dialog(title=f"{APP_NAME} - create your identity", transient_for=parent, modal=True)
+    dlg = Gtk.Dialog(title=f"{APP_NAME} - step 1 of 2: your identity", transient_for=parent, modal=True)
     setup_app_icon(dlg)
     dlg.add_buttons("Cancel", Gtk.ResponseType.CANCEL,
                     "Import backup…", Gtk.ResponseType.APPLY,
@@ -4112,7 +4157,8 @@ def ask_create_identity(parent):
     box = dlg.get_content_area()
     box.set_spacing(8)
     box.set_border_width(10)
-    box.add(Gtk.Label(label="No identity on this machine yet - create one, or restore a backup."))
+    box.add(Gtk.Label(label="No identity on this machine yet - create one, or restore a backup. "
+                            "Next you pick the peers AIMless connects through."))
     box.add(Gtk.Label(label="Passphrase (protects your keys; re-enter it later to unlock)"))
     pw = Gtk.Entry(visibility=False, activates_default=True)
     box.add(pw)
@@ -4134,6 +4180,185 @@ def ask_create_identity(parent):
         return ("__mismatch__",)
     return (p1, sn)
 
+
+def open_external(url):
+    """Open a URL in the user's browser.
+
+    Used for the public peer list, so nobody has to go looking for it.
+    """
+    for opener in (["xdg-open", url], ["gio", "open", url]):
+        try:
+            subprocess.Popen(opener, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL)
+            return True
+        except (OSError, FileNotFoundError):
+            continue
+    return False
+
+
+class PeerListBox(Gtk.Box):
+    """The peers we connect through, and how each one is doing.
+
+    Used twice: in the setup wizard, where there is no daemon to ask yet, and
+    in the peer manager, where each peer shows its live state.
+    """
+
+    def __init__(self, peer_list=None, live=False):
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        self.live = live
+        self._uris = list(peer_list or [])
+        self._rows = {}
+
+        self.list_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        self.pack_start(self.list_box, False, False, 0)
+
+        add_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        self.entry = Gtk.Entry(placeholder_text="tls://host:port  (or tcp://, quic://, ws://)")
+        add_row.pack_start(self.entry, True, True, 0)
+        add_btn = Gtk.Button(label="Add")
+        add_btn.connect("clicked", self._on_add)
+        add_row.pack_start(add_btn, False, False, 0)
+        self.pack_start(add_row, False, False, 0)
+
+        link = Gtk.Button(label="Browse the public peer list")
+        link.set_halign(Gtk.Align.START)
+        link.connect("clicked", self._on_link)
+        self.pack_start(link, False, False, 0)
+
+        self.status = Gtk.Label(label="")
+        self.status.set_xalign(0.0)
+        self.status.set_line_wrap(True)
+        self.status.get_style_context().add_class("muted")
+        self.pack_start(self.status, False, False, 0)
+
+        self._rebuild()
+
+    # -- the list ---------------------------------------------------------
+    def get_peers(self):
+        return list(self._uris)
+
+    def set_peers(self, peer_list):
+        self._uris = list(peer_list or [])
+        self._rebuild()
+
+    def add_peer(self, uri):
+        """Add a peer. Returns None on success, or the reason it was refused."""
+        uri = (uri or "").strip()
+        problem = peersmod.validate_peer_uri(uri)
+        if problem:
+            self._say(problem)
+            return problem
+        if any(peersmod.peer_key(u) == peersmod.peer_key(uri) for u in self._uris):
+            self._say("that peer is already in the list")
+            return "already in the list"
+        self._uris.append(uri)
+        self._rebuild()
+        self._say("")
+        return None
+
+    def remove_peer(self, uri):
+        self._uris = [u for u in self._uris if u != uri]
+        self._rebuild()
+
+    # -- live state -------------------------------------------------------
+    def set_states(self, details):
+        """Show what the daemon says about each peer."""
+        by_key = {}
+        for d in details or []:
+            by_key[peersmod.peer_key(d.get("uri", ""))] = d
+        for uri, label in self._rows.items():
+            d = by_key.get(peersmod.peer_key(uri))
+            label.get_style_context().remove_class("muted")
+            if d is None:
+                # Configured, but the daemon has no link for it: it was refused.
+                label.set_markup(f"<span foreground='{C['away']}'>not connected</span>")
+                continue
+            state = peersmod.peer_state(d)
+            colour = C["online"] if d.get("up") else C["away"]
+            if d.get("error"):
+                colour = C["danger"]
+            label.set_markup(f"<span foreground='{colour}'>"
+                             f"{GLib.markup_escape_text(state)}</span>")
+
+    # -- internals --------------------------------------------------------
+    def _say(self, text):
+        self.status.set_text(text)
+
+    def _on_add(self, _btn):
+        self.add_peer(self.entry.get_text())
+        self.entry.set_text("")
+
+    def _on_link(self, _btn):
+        if not open_external(peersmod.PEER_LIST_URL):
+            self._say(f"could not open a browser - the peer list is at {peersmod.PEER_LIST_URL}")
+
+    def _rebuild(self):
+        for child in self.list_box.get_children():
+            self.list_box.remove(child)
+        self._rows = {}
+        if not self._uris:
+            empty = Gtk.Label(label="No peers - AIMless cannot reach the network.")
+            empty.set_xalign(0.0)
+            empty.get_style_context().add_class("muted")
+            self.list_box.pack_start(empty, False, False, 0)
+        for uri in self._uris:
+            row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            name = Gtk.Label(label=uri)
+            name.set_xalign(0.0)
+            name.set_ellipsize(Pango.EllipsizeMode.MIDDLE)
+            name.set_selectable(True)
+            name.set_max_width_chars(48)
+            row.pack_start(name, True, True, 0)
+            state = Gtk.Label(label="")
+            state.set_xalign(0.0)
+            row.pack_start(state, False, False, 0)
+            rm = Gtk.Button(label="Remove")
+            rm.connect("clicked", lambda _b, u=uri: self.remove_peer(u))
+            row.pack_start(rm, False, False, 0)
+            self.list_box.pack_start(row, False, False, 0)
+            self._rows[uri] = state
+        self.list_box.show_all()
+
+
+def ask_peers(parent, peer_list, live=False, details=None):
+    """The peers step of the setup wizard, and the peer manager.
+
+    In the wizard this is the second step: which nodes we reach the network
+    through. In the manager it also shows what each peer is doing right now.
+
+    Returns the new peer list, or None if the user cancelled.
+    """
+    title = "AIMless - peers" if live else "AIMless - step 2 of 2: peers"
+    dlg = Gtk.Dialog(title=title, transient_for=parent, modal=True)
+    setup_app_icon(dlg)
+    if live:
+        dlg.add_button("Close", Gtk.ResponseType.CLOSE)
+        dlg.add_button("Save", Gtk.ResponseType.OK)
+    else:
+        dlg.add_button("Cancel", Gtk.ResponseType.CANCEL)
+        dlg.add_button("Finish", Gtk.ResponseType.OK)
+    dlg.set_default_size(560, -1)
+    box = dlg.get_content_area()
+    box.set_spacing(10)
+    box.set_border_width(14)
+
+    head = Gtk.Label(label="AIMless reaches the network through public peers. "
+                            "The built-in ones are nearby and checked every few minutes - "
+                            "keep them, or add your own.")
+    head.set_xalign(0.0)
+    head.set_line_wrap(True)
+    box.pack_start(head, False, False, 0)
+
+    plist = PeerListBox(peer_list, live=live)
+    box.pack_start(plist, False, False, 0)
+
+    dlg.show_all()
+    if live:
+        plist.set_states(details)
+    resp = dlg.run()
+    peers = plist.get_peers() if resp == Gtk.ResponseType.OK else None
+    dlg.destroy()
+    return peers
 
 def create_identity(passphrase, screen):
     """Persist a fresh identity and self contact entry. Mirrors `aimless init`."""
@@ -4762,6 +4987,69 @@ class AimlessApp:
         self.open_window()
         return GLib.SOURCE_REMOVE
 
+    def _apply_peer_list(self, peers):
+        """Write a peer list to the daemon.
+
+        The daemon validates it, saves it to its config.json and applies it, so
+        the list survives a restart and the file never disagrees with what the
+        daemon is doing.
+        """
+        d = None
+        try:
+            d = DaemonClient(self.supervisor.sock)
+            resp = d.request("setpeers", peer_list=list(peers), timeout=20)
+        except Exception as e:
+            self.log(f"could not set the peer list: {e!r}")
+            return False
+        finally:
+            if d is not None:
+                d.close()
+        for uri, why in (resp.get("failed") or {}).items():
+            self.log(f"peer refused: {uri} - {why}")
+        added = resp.get("added") or []
+        removed = resp.get("removed") or []
+        if added:
+            self.log(f"peers added: {', '.join(added)}")
+        if removed:
+            self.log(f"peers removed: {', '.join(removed)}")
+        return True
+
+    def show_peers(self, parent=None):
+        """The peer manager: the list, each peer's state, and the link to the
+        public peer list."""
+        st = self.supervisor.status()
+        if st is None:
+            _error_dialog(parent, "The daemon is not answering, so its peer list "
+                                  "is unknown. Start it and try again.")
+            return
+        current = st.get("peer_list") or []
+        details = st.get("peer_details") or []
+        peers = ask_peers(parent, current, live=True, details=details)
+        if peers is None:
+            return
+        if peers != current:
+            self._apply_peer_list(peers)
+
+    def _first_run_peers(self):
+        """The peers step of the setup wizard.
+
+        The daemon already falls back to the built-in list, so this step is
+        about adding one of your own - and about showing where the public
+        list lives, because that is the first thing people look for.
+        """
+        st = self.supervisor.status()
+        if st is None:
+            # The daemon is not answering: we do not know its peer list, and an
+            # empty list would look like "no peers" rather than "no answer".
+            self.log("daemon not answering - skipping the peers step")
+            return
+        current = st.get("peer_list") or []
+        peers = ask_peers(None, current)
+        if peers is None:
+            return
+        if peers != current:
+            self._apply_peer_list(peers)
+
     def open_window(self):
         if getattr(self, "_awaiting_connect", False):
             if self.connect_window is not None:
@@ -4786,6 +5074,7 @@ class AimlessApp:
     def _open_window_unlocked(self):
         session = None
         passphrase = self.passphrase
+        fresh_identity = False
         if not os.path.exists(identity_path()):
             for _create in range(3):
                 created = ask_create_identity(None)
@@ -4798,6 +5087,7 @@ class AimlessApp:
                         passphrase = imported
                         try:
                             session = Session(passphrase)
+                            fresh_identity = True
                             break
                         except (ValueError, OSError) as e:
                             _error_dialog(None, f"imported identity could not be opened: {e}")
@@ -4813,6 +5103,7 @@ class AimlessApp:
                     create_identity(new_pw, screen)
                     passphrase = new_pw
                     session = Session(passphrase)
+                    fresh_identity = True
                     break
                 except OSError as e:
                     err = Gtk.MessageDialog(message_type=Gtk.MessageType.ERROR, buttons=Gtk.ButtonsType.CLOSE,
@@ -4853,6 +5144,9 @@ class AimlessApp:
                         return
                 else:
                     return
+        if fresh_identity:
+            # Step 2 of the setup wizard: the peers.
+            self._first_run_peers()
         self.passphrase = passphrase
         if session.cache_recovered:
             self.log(f"cache recovery: {session.cache_recovered}")

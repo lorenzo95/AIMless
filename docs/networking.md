@@ -28,18 +28,21 @@ The normal way, and the one that survives restarts. Both keys are optional:
 ```json
 {
   "peers": [
-    "tls://23.184.48.86:1443",
-    "tls://31.22.111.195:32000"
+    "tls://ca.us.ygg.informatics.coop:443?key=0000000023fc6ffb62afb79448aefb0943df2e4472cf08bd489f5407378300a2",
+    "tcp://ip4.nerdvm.mywire.org:8080?key=00000000c61d731961a290d127cd3fc03a4c5f3f35b9083559d4c81d48d65854"
   ],
   "listen": []
 }
 ```
 
+The same list can be edited from the app - **Options → Peers …** - which
+writes this file and applies the change without a restart.
+
 ### Command-line flags
 
 ```sh
 aimlessd -datadir ~/.local/share/aimless/daemon -api ~/.local/share/aimless/daemon/api.sock \
-         -peers tls://23.184.48.86:1443,tls://31.22.111.195:32000 \
+         -peers tls://ca.us.ygg.informatics.coop:443,tcp://ip4.nerdvm.mywire.org:8080 \
          -listen tcp://0.0.0.0:9001
 ```
 
@@ -54,10 +57,11 @@ Two gotchas worth knowing:
 
 - **A flag replaces the config, it does not merge with it.** Passing `-peers`
   with one URI throws away whatever `config.json` listed.
-- **An empty `peers` array in `config.json` does not mean "no peers"** - an
-  empty list falls through to the built-in defaults. To run with no peers at
-  all you must pass `-peers none` explicitly. (`listen` has no such quirk: an
-  empty list simply means no inbound listeners.)
+- **An empty `peers` array in `config.json` means "no peers"** - the daemon
+  runs as an isolated node on purpose. A config file *without* a `peers` key
+  means "use the built-in list". `-peers none` says the same thing from the
+  command line. (`listen` has no such quirk: an empty list simply means no
+  inbound listeners.)
 
 ### All daemon flags
 
@@ -72,6 +76,34 @@ Two gotchas worth knowing:
 | `-inbox` | `50` | Messages retained per peer before the oldest are dropped. |
 | `-attachcap` | `64MiB` | Per-peer attachment byte budget. |
 | `-verbose` | off | Debug logging to `logs/daemon.log`. |
+
+## The built-in peer list
+
+`defaultPeers` in `daemon/main.go` is the fallback when there is no
+`peers` key in `config.json`. It is deliberately small:
+
+- **five peers**, from **five different operators** - one operator going down
+  should not take you with it;
+- **measured**, not copied - each entry was dialled and its round trip time
+  recorded, so the set is close by (tens of milliseconds);
+- **pinned** with `?key=` - the peer has to present that public key, so an IP
+  that gets reassigned cannot pass itself off as the node you meant to reach.
+
+Public peers rot: operators go away, and a lapsed domain gets parked - the
+hostname resolves to `0.0.0.0`, which connects to localhost and is refused
+instantly. That is how this daemon once ended up with no peers at all. So:
+
+- a peer whose hostname does not resolve is **refused at startup** and shown
+  in the peer manager, instead of being counted as a peer;
+- the peer list is editable at runtime (**Options → Peers …**), so a dead peer
+  can be swapped without editing files and restarting;
+- the current public list lives at <https://publicpeers.neilalexander.dev/>,
+  and in machine-readable form at
+  <https://github.com/Yggdrasil-Unofficial/pubpeers> (`peers.json`). The peer
+  manager links to it - there is no need to go looking for it.
+
+Only add a few peers. The upstream guidance is to pick a small number of
+nearby ones: every extra peer is another node you relay traffic for.
 
 ## Peer URI reference
 

@@ -9,12 +9,17 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/url"
 	"os"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
+
+	"github.com/yggdrasil-network/yggdrasil-go/src/core"
 )
 
-const buildVersion = "aimlessd/0.9.7"
+const buildVersion = "aimlessd/0.9.8"
 
 // protocolVersion identifies the wire format spoken to other daemons. Peers on a
 // different version are ignored rather than misparsed; there is no compat layer.
@@ -27,6 +32,9 @@ type peerStatus struct {
 	Inbound bool   `json:"inbound"`
 	TXBytes uint64 `json:"tx_bytes"`
 	RXBytes uint64 `json:"rx_bytes"`
+	// Error is why the peer is not usable: the last dial error, or the
+	// reason it was refused at startup (an unresolvable hostname).
+	Error string `json:"error,omitempty"`
 }
 
 type historyMsg struct {
@@ -36,30 +44,34 @@ type historyMsg struct {
 }
 
 type apiMessage struct {
-	Op        string          `json:"op"`
-	Id        string          `json:"id,omitempty"`
-	Address   string          `json:"address,omitempty"`
-	Key       string          `json:"key,omitempty"`
-	Pid       int             `json:"pid,omitempty"`
-	To        string          `json:"to,omitempty"`
-	From      string          `json:"from,omitempty"`
-	Payload   string          `json:"payload,omitempty"`
-	Bytes     int             `json:"bytes,omitempty"`
-	Seq       uint64          `json:"seq,omitempty"`
-	Ts        int64           `json:"ts,omitempty"`
-	Error     string          `json:"error,omitempty"`
-	Peers     []peerStatus    `json:"peers,omitempty"`
-	MTU       int             `json:"mtu,omitempty"`
-	Build     string          `json:"build,omitempty"`
-	Msgs      []historyMsg    `json:"msgs,omitempty"`
-	Oldest    uint64          `json:"oldest,omitempty"`
-	Latest    uint64          `json:"latest,omitempty"`
-	Presence  []presenceEntry `json:"presence,omitempty"`
-	Blocked   []string        `json:"blocked,omitempty"`
-	Type      string          `json:"type,omitempty"`
-	Transfers []AttachPending `json:"transfers,omitempty"`
-	Chunks    []attachEntry   `json:"chunks,omitempty"`
-	Tid       string          `json:"tid,omitempty"`
+	Op        string            `json:"op"`
+	Id        string            `json:"id,omitempty"`
+	Address   string            `json:"address,omitempty"`
+	Key       string            `json:"key,omitempty"`
+	Pid       int               `json:"pid,omitempty"`
+	To        string            `json:"to,omitempty"`
+	From      string            `json:"from,omitempty"`
+	Payload   string            `json:"payload,omitempty"`
+	Bytes     int               `json:"bytes,omitempty"`
+	Seq       uint64            `json:"seq,omitempty"`
+	Ts        int64             `json:"ts,omitempty"`
+	Error     string            `json:"error,omitempty"`
+	Peers     []peerStatus      `json:"peers,omitempty"`
+	PeerList  []string          `json:"peer_list,omitempty"`
+	Added     []string          `json:"added,omitempty"`
+	Removed   []string          `json:"removed,omitempty"`
+	Failed    map[string]string `json:"failed,omitempty"`
+	MTU       int               `json:"mtu,omitempty"`
+	Build     string            `json:"build,omitempty"`
+	Msgs      []historyMsg      `json:"msgs,omitempty"`
+	Oldest    uint64            `json:"oldest,omitempty"`
+	Latest    uint64            `json:"latest,omitempty"`
+	Presence  []presenceEntry   `json:"presence,omitempty"`
+	Blocked   []string          `json:"blocked,omitempty"`
+	Type      string            `json:"type,omitempty"`
+	Transfers []AttachPending   `json:"transfers,omitempty"`
+	Chunks    []attachEntry     `json:"chunks,omitempty"`
+	Tid       string            `json:"tid,omitempty"`
 }
 
 // apiConn is one client connection.
@@ -89,9 +101,12 @@ type APIServer struct {
 	mu       sync.Mutex
 	conns    map[*apiConn]struct{}
 	closed   bool
+	// configPath is where the peer list is persisted, so an edit made from
+	// the client survives a restart of the daemon.
+	configPath string
 }
 
-func NewAPIServer(node *Node, mail *Mail, presence *Presence, socketPath string) (*APIServer, error) {
+func NewAPIServer(node *Node, mail *Mail, presence *Presence, socketPath, configPath string) (*APIServer, error) {
 	if err := os.Remove(socketPath); err != nil && !os.IsNotExist(err) {
 		return nil, fmt.Errorf("remove stale socket: %w", err)
 	}
@@ -103,7 +118,8 @@ func NewAPIServer(node *Node, mail *Mail, presence *Presence, socketPath string)
 		ln.Close()
 		return nil, fmt.Errorf("chmod socket: %w", err)
 	}
-	s := &APIServer{node: node, mail: mail, presence: presence, ln: ln, conns: make(map[*apiConn]struct{})}
+	s := &APIServer{node: node, mail: mail, presence: presence, ln: ln,
+		conns: make(map[*apiConn]struct{}), configPath: configPath}
 	go s.acceptLoop()
 	return s, nil
 }
@@ -173,15 +189,23 @@ func (s *APIServer) dispatch(conn *apiConn, req apiMessage) {
 				Inbound: p.Inbound,
 				TXBytes: p.TXBytes,
 				RXBytes: p.RXBytes,
+				Error:   lastPeerError(p),
 			})
 		}
+		// Peers we refused (a hostname that does not resolve) are peers too:
+		// the client has to show them, or the list silently shrinks.
+		_, refused := s.node.PeerState()
+		for uri, reason := range refused {
+			out = append(out, peerStatus{URI: uri, Error: reason})
+		}
 		s.replyReq(conn, req, apiMessage{
-			Op:      "status",
-			Address: s.node.Address.String(),
-			Key:     hex.EncodeToString(s.node.Pub),
-			Peers:   out,
-			MTU:     int(s.node.Core.MTU()),
-			Build:   buildVersion,
+			Op:       "status",
+			Address:  s.node.Address.String(),
+			Key:      hex.EncodeToString(s.node.Pub),
+			Peers:    out,
+			PeerList: s.node.ConfiguredPeers(),
+			MTU:      int(s.node.Core.MTU()),
+			Build:    buildVersion,
 		})
 	case "send":
 		s.handleSend(conn, req)
@@ -205,6 +229,8 @@ func (s *APIServer) dispatch(conn *apiConn, req apiMessage) {
 		s.handleBlock(conn, req, true)
 	case "unblock":
 		s.handleBlock(conn, req, false)
+	case "setpeers":
+		s.handleSetPeers(conn, req)
 	case "blocklist":
 		s.replyReq(conn, req, apiMessage{Op: "blocklist", Blocked: s.mail.Blocked()})
 	case "":
@@ -355,6 +381,126 @@ func (s *APIServer) handleSetStatus(conn *apiConn, req apiMessage) {
 		return
 	}
 	s.replyReq(conn, req, apiMessage{Op: "statusset", To: req.To, Seq: seq})
+}
+
+// handleSetPeers replaces the peer list at runtime.
+//
+// The list is validated first (a bad URI is refused, not dialled), written to
+// config.json so it survives a restart, and only then applied - so the file and
+// the running daemon never disagree.
+func (s *APIServer) handleSetPeers(conn *apiConn, req apiMessage) {
+	peers := make([]string, 0, len(req.PeerList))
+	for _, uri := range req.PeerList {
+		uri = strings.TrimSpace(uri)
+		if uri == "" {
+			continue
+		}
+		if err := validatePeerURI(uri); err != nil {
+			s.replyReq(conn, req, apiMessage{Op: "error", Error: err.Error()})
+			return
+		}
+		peers = append(peers, uri)
+	}
+	if err := s.savePeers(peers); err != nil {
+		s.replyReq(conn, req, apiMessage{Op: "error", Error: err.Error()})
+		return
+	}
+	added, removed, failed := s.node.SetPeers(s.node.Core, peers)
+	s.replyReq(conn, req, apiMessage{
+		Op:      "peers",
+		Peers:   s.peerStatuses(),
+		Added:   added,
+		Removed: removed,
+		Failed:  failed,
+	})
+}
+
+// validatePeerURI checks a peer URI before it is dialled or stored.
+//
+// The scheme has to be one Yggdrasil speaks, and the host has to look like a
+// host: a URI with a shell metacharacter or a path in it never reaches the
+// network, it just becomes a way to confuse the config file.
+func validatePeerURI(uri string) error {
+	u, err := url.Parse(uri)
+	if err != nil {
+		return fmt.Errorf("bad peer %q: %v", uri, err)
+	}
+	switch u.Scheme {
+	case "tcp", "tls", "quic", "ws", "wss", "unix":
+	default:
+		return fmt.Errorf("bad peer %q: unknown scheme %q", uri, u.Scheme)
+	}
+	if u.Scheme == "unix" {
+		if u.Path == "" {
+			return fmt.Errorf("bad peer %q: no socket path", uri)
+		}
+		return nil
+	}
+	if u.Hostname() == "" {
+		return fmt.Errorf("bad peer %q: no host", uri)
+	}
+	if p := u.Port(); p != "" {
+		n, err := strconv.Atoi(p)
+		if err != nil || n < 1 || n > 65535 {
+			return fmt.Errorf("bad peer %q: bad port %q", uri, p)
+		}
+	} else {
+		return fmt.Errorf("bad peer %q: no port", uri)
+	}
+	if u.Path != "" && u.Path != "/" {
+		return fmt.Errorf("bad peer %q: a peer URI cannot have a path", uri)
+	}
+	if strings.Contains(uri, "..") {
+		return fmt.Errorf("bad peer %q: a peer URI cannot contain ..", uri)
+	}
+	return nil
+}
+
+// lastPeerError is why a peer is not up, if we know.
+func lastPeerError(p core.PeerInfo) string {
+	if p.LastError != nil {
+		return p.LastError.Error()
+	}
+	return ""
+}
+
+// savePeers writes the peer list to the daemon's config.json.
+//
+// The file is the source of truth: the daemon reads it at startup, so what the
+// client sees in the peer manager is what the daemon will use next time.
+func (s *APIServer) savePeers(peers []string) error {
+	if s.configPath == "" {
+		return fmt.Errorf("this daemon has no config file to write")
+	}
+	cfg, err := loadConfig(s.configPath)
+	if err != nil {
+		return err
+	}
+	list := append([]string(nil), peers...)
+	cfg.Peers = &list
+	return saveConfig(s.configPath, cfg)
+}
+
+// peerStatuses is the status op's peer list.
+func (s *APIServer) peerStatuses() []peerStatus {
+	peers := s.node.Core.GetPeers()
+	out := make([]peerStatus, 0, len(peers))
+	for _, p := range peers {
+		out = append(out, peerStatus{
+			URI:     p.URI,
+			Up:      p.Up,
+			Latency: p.Latency.Milliseconds(),
+			Inbound: p.Inbound,
+			TXBytes: p.TXBytes,
+			RXBytes: p.RXBytes,
+			Error:   lastPeerError(p),
+		})
+	}
+	_, refused := s.node.PeerState()
+	for uri, reason := range refused {
+		out = append(out, peerStatus{URI: uri, Error: reason})
+	}
+	return out
 }
 
 func (s *APIServer) handleBlock(conn *apiConn, req apiMessage, block bool) {

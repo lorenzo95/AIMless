@@ -37,9 +37,17 @@ type Node struct {
 	priv      ed25519.PrivateKey
 	listeners []*core.Listener
 	closeOnce sync.Once
-	control   chan outbound // small, latency-sensitive: ACKs, status, probes, text
-	bulk      chan outbound // large: TypeFile chunks
-	writeFn   func(pub ed25519.PublicKey, payload []byte)
+	logger    *aimlessLogger
+
+	// The peers we actually dialled, and the ones we refused (a hostname that
+	// does not resolve, a URI we cannot parse). The client shows both, so a
+	// parked DNS record is visible instead of a mysterious missing peer.
+	peerMu     sync.RWMutex
+	peerURIs   []string
+	peerErrors map[string]string
+	control    chan outbound // small, latency-sensitive: ACKs, status, probes, text
+	bulk       chan outbound // large: TypeFile chunks
+	writeFn    func(pub ed25519.PublicKey, payload []byte)
 }
 
 type outbound struct {
@@ -113,6 +121,7 @@ func StartNode(datadir string, peers []string, listenURLs []string, log *aimless
 	}
 	n := &Node{
 		Core:    c,
+		logger:  log,
 		priv:    priv,
 		Pub:     priv.Public().(ed25519.PublicKey),
 		control: make(chan outbound, 64),
@@ -144,19 +153,129 @@ func StartNode(datadir string, peers []string, listenURLs []string, log *aimless
 	}
 
 	for _, raw := range peers {
-		u, err := url.Parse(raw)
-		if err != nil {
-			n.Stop()
-			return nil, fmt.Errorf("parse peer url %q: %w", raw, err)
+		if err := n.addPeer(c, raw); err != nil {
+			// One unusable peer must not take the whole daemon down: the
+			// node still works with the peers that are left.
+			n.logger.Printf("skipping peer %q: %v", raw, err)
+			n.notePeerError(raw, err.Error())
+			continue
 		}
-		if err := c.AddPeer(u, ""); err != nil {
-			n.Stop()
-			return nil, fmt.Errorf("add peer %q: %w", raw, err)
-		}
+		n.notePeer(raw)
 	}
 
 	go n.readLoop()
 	return n, nil
+}
+
+// addPeer parses and dials one peer.
+//
+// A hostname that does not resolve is refused up front: a parked DNS record
+// resolves to 0.0.0.0 and the link then retries forever against nothing, which
+// is exactly how a node ends up on an island with no clue why.
+func (n *Node) addPeer(c *core.Core, raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("parse peer url: %w", err)
+	}
+	if u.Scheme == "" || u.Host == "" {
+		return fmt.Errorf("peer url needs a scheme and a host")
+	}
+	if host := u.Hostname(); host != "" && net.ParseIP(host) == nil {
+		if _, err := net.LookupHost(host); err != nil {
+			return fmt.Errorf("cannot resolve %s: %w", host, err)
+		}
+	}
+	return c.AddPeer(u, "")
+}
+
+func (n *Node) notePeer(uri string) {
+	n.peerMu.Lock()
+	defer n.peerMu.Unlock()
+	n.peerURIs = append(n.peerURIs, uri)
+}
+
+func (n *Node) notePeerError(uri, reason string) {
+	n.peerMu.Lock()
+	defer n.peerMu.Unlock()
+	if n.peerErrors == nil {
+		n.peerErrors = map[string]string{}
+	}
+	n.peerErrors[uri] = reason
+}
+
+// PeerState returns the peers we dialled and the ones we refused.
+func (n *Node) PeerState() (dialed []string, refused map[string]string) {
+	n.peerMu.RLock()
+	defer n.peerMu.RUnlock()
+	dialed = append(dialed, n.peerURIs...)
+	refused = map[string]string{}
+	for k, v := range n.peerErrors {
+		refused[k] = v
+	}
+	return dialed, refused
+}
+
+// ConfiguredPeers is the peer list as configured, in order: the ones we
+// dialled, then the ones we refused. The client edits this list, so it has to
+// be the exact strings that were stored, not the library's normalised form.
+func (n *Node) ConfiguredPeers() []string {
+	n.peerMu.RLock()
+	defer n.peerMu.RUnlock()
+	out := append([]string(nil), n.peerURIs...)
+	for uri := range n.peerErrors {
+		out = append(out, uri)
+	}
+	return out
+}
+
+// SetPeers replaces the peer list at runtime: peers that are gone are
+// dropped, new ones are dialled. It is what the client's peer manager uses.
+func (n *Node) SetPeers(c *core.Core, peers []string) (added, removed []string, failed map[string]string) {
+	n.peerMu.Lock()
+	old := append([]string(nil), n.peerURIs...)
+	n.peerURIs = nil
+	n.peerErrors = map[string]string{}
+	n.peerMu.Unlock()
+
+	wanted := map[string]bool{}
+	for _, raw := range peers {
+		wanted[raw] = true
+	}
+	// Peers we already have stay as they are: only the ones that are gone
+	// are dropped, and only the ones that are new are dialled.
+	kept := map[string]bool{}
+	for _, raw := range old {
+		if wanted[raw] {
+			kept[raw] = true
+			continue
+		}
+		u, err := url.Parse(raw)
+		if err != nil {
+			continue
+		}
+		if err := c.RemovePeer(u, ""); err != nil {
+			n.logger.Printf("could not remove peer %q: %v", raw, err)
+			continue
+		}
+		removed = append(removed, raw)
+	}
+	failed = map[string]string{}
+	for _, raw := range peers {
+		if kept[raw] {
+			// Keep it in the list, it is already dialled.
+			n.notePeer(raw)
+			continue
+		}
+		if err := n.addPeer(c, raw); err != nil {
+			n.logger.Printf("skipping peer %q: %v", raw, err)
+			n.notePeerError(raw, err.Error())
+			failed[raw] = err.Error()
+			continue
+		}
+		n.notePeer(raw)
+		added = append(added, raw)
+	}
+	return added, removed, failed
 }
 
 // SetHandlers installs the packet and path-up handlers.
