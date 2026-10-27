@@ -26,6 +26,10 @@ ICON_NAME = "aimless"
 UNREAD_ICON_NAME = "aimless-unread"
 OFFLINE_ICON_NAME = "aimless-offline"
 OFFLINE_UNREAD_ICON_NAME = "aimless-offline-unread"
+# At risk: still on the network, but with one link left. The figure turns
+# amber - yellow is fine, orange is fragile, red is gone.
+WARN_ICON_NAME = "aimless-warn"
+WARN_UNREAD_ICON_NAME = "aimless-warn-unread"
 
 # Sizes rendered into the icon theme. The window asks for 48, the tray for
 # 22/24, but the theme picks the closest match for whatever the desktop asks.
@@ -45,6 +49,10 @@ _BADGE = (0.90, 0.28, 0.24)
 _FIGURE_OFFLINE = (0.93, 0.31, 0.26)
 _BLUE_TOP_OFFLINE = (0.20, 0.44, 0.62)
 _BLUE_BOTTOM_OFFLINE = (0.03, 0.24, 0.45)
+
+# At risk: the tile stays blue - the node is still on the network - but the
+# figure goes amber, so one link left looks different from all of them.
+_FIGURE_WARN = (0.97, 0.55, 0.10)
 
 _cache = {}
 
@@ -138,12 +146,12 @@ def _running_man(ctx, size):
     ctx.fill()
 
 
-def render(size=48, unread=False, offline=False):
+def render(size=48, unread=False, offline=False, warn=False):
     """Draw the icon and return a GdkPixbuf (or None if the stack is missing)."""
     cairo, Gdk = _imports()
     if cairo is None:
         return None
-    key = (size, unread, offline)
+    key = (size, unread, offline, warn)
     if key in _cache:
         return _cache[key]
 
@@ -160,7 +168,13 @@ def render(size=48, unread=False, offline=False):
 
     # The running man. Scaled inside the tile so it keeps a blue margin, and
     # nudged left so the top-right corner stays free for the unread badge.
-    ctx.set_source_rgb(*(_FIGURE_OFFLINE if offline else _FIGURE))
+    if offline:
+        figure = _FIGURE_OFFLINE
+    elif warn:
+        figure = _FIGURE_WARN
+    else:
+        figure = _FIGURE
+    ctx.set_source_rgb(*figure)
     ctx.save()
     ctx.translate(size * 0.04, size * 0.05)
     ctx.scale(0.92, 0.92)
@@ -183,24 +197,29 @@ def render(size=48, unread=False, offline=False):
     return pixbuf
 
 
-def icon_name(unread=False, offline=False):
+def icon_name(unread=False, offline=False, warn=False):
     """The icon-theme name for the current state.
 
-    Offline wins over unread: not being attached is the more urgent fact,
-    and the offline variants carry the badge as well.
+    Offline wins over everything, then warn: not being attached is the more
+    urgent fact, and being one link away from it is the next. The offline and
+    warn variants carry the badge as well.
     """
     if offline:
         return OFFLINE_UNREAD_ICON_NAME if unread else OFFLINE_ICON_NAME
+    if warn:
+        return WARN_UNREAD_ICON_NAME if unread else WARN_ICON_NAME
     return UNREAD_ICON_NAME if unread else ICON_NAME
 
 
 def variants():
-    """Every (name, unread, offline) the app can show."""
+    """Every (name, unread, offline, warn) the app can show."""
     return [
-        (ICON_NAME, False, False),
-        (UNREAD_ICON_NAME, True, False),
-        (OFFLINE_ICON_NAME, False, True),
-        (OFFLINE_UNREAD_ICON_NAME, True, True),
+        (ICON_NAME, False, False, False),
+        (UNREAD_ICON_NAME, True, False, False),
+        (OFFLINE_ICON_NAME, False, True, False),
+        (OFFLINE_UNREAD_ICON_NAME, True, True, False),
+        (WARN_ICON_NAME, False, False, True),
+        (WARN_UNREAD_ICON_NAME, True, False, True),
     ]
 
 
@@ -245,8 +264,8 @@ def install():
 
     for root in theme_dirs():
         for size in SIZES:
-            for name, unread, offline in variants():
-                pixbuf = render(size, unread, offline)
+            for name, unread, offline, warn in variants():
+                pixbuf = render(size, unread, offline, warn)
                 if pixbuf is None:
                     continue
                 path = os.path.join(root, f"{size}x{size}", "apps", f"{name}.png")

@@ -100,6 +100,10 @@ instantly. That is how this daemon once ended up with no peers at all. So:
   built-in peers** puts the curated list back if you empty it by accident;
 - a node with no peers at all cannot reach anyone, so the tray says so (it used
   to stay quiet, which made an empty peer list look like a working setup);
+- with exactly one peer up the tray turns **amber**: the node is still on the
+  network, but that one link is the only way through. Losing a few peers is
+  not worth a warning - you still have redundancy - so the amber state is
+  reserved for the last link;
 - the current public list lives at <https://publicpeers.neilalexander.dev/>,
   and in machine-readable form at
   <https://github.com/Yggdrasil-Unofficial/pubpeers> (`peers.json`). The peer

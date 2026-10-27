@@ -876,10 +876,10 @@ def setup_application_identity():
         pass
 
 
-def tray_icon_name(unread=False, offline=False):
-    """Icon name for the tray: the app icon, badged when there are unread and
-    red when the client is not attached."""
-    name = appicon.icon_name(unread, offline)
+def tray_icon_name(unread=False, offline=False, warn=False):
+    """Icon name for the tray: the app icon, badged when there are unread,
+    amber when one peer is left and red when the client is not attached."""
+    name = appicon.icon_name(unread, offline, warn)
     if appicon.has_icon(name):
         return name
     # No app icon in the theme (first run, or a read-only home). Fall back to
@@ -888,6 +888,9 @@ def tray_icon_name(unread=False, offline=False):
     if offline:
         return first_icon("network-offline-symbolic",
                           "network-wireless-signal-none-symbolic", "dialog-error")
+    if warn:
+        return first_icon("network-wireless-signal-weak-symbolic",
+                          "network-wireless-signal-excellent-symbolic")
     if unread:
         return first_icon("mail-unread-symbolic", "mail-message-new-symbolic")
     return first_icon("user-available-symbolic", "phone")
@@ -3133,13 +3136,9 @@ class AimlessWindow(Gtk.Window):
         route_bar.pack_start(self.route_icon, False, False, 0)
         self.route_label = Gtk.Label(label="daemon: starting …")
         route_bar.pack_start(self.route_label, False, False, 0)
-        # The peer count is plain text, like the rest of the bar - the peer
-        # manager lives in the menu.
-        self.peers_label = Gtk.Label(label="peers")
-        self.peers_label.set_tooltip_text("Which nodes AIMless reaches the network through")
-        route_bar.pack_start(self.peers_label, False, False, 0)
         self.self_id_label = Gtk.Label()
         self.self_id_label.set_ellipsize(Pango.EllipsizeMode.END)
+        self.self_id_label.get_style_context().add_class("muted")
         route_bar.pack_end(self.self_id_label, False, False, 0)
         root.pack_start(route_bar, False, False, 0)
         self._self_id = None
@@ -3505,10 +3504,24 @@ class AimlessWindow(Gtk.Window):
                 self.route_label.set_tooltip_text(None)
             self.route_label.set_markup(
                 f"<span foreground='{C['away']}'>●  connecting - no Yggdrasil peers yet</span>{tail}")
-            self._set_peers_label(st)
             self._set_route_icon(first_icon(
                 "network-wireless-signal-weak-symbolic", "network-wireless-signal-ok-symbolic",
                 "network-idle-symbolic"))
+        elif st["peers_up"] == 1 and st["peers_total"] > 1:
+            # One link left: still on the network, but one failure away from
+            # being cut off. Worth saying - losing a few peers is not.
+            tail = ""
+            if tunnel is not None:
+                tail = f"  ·  ↗ {GLib.markup_escape_text(tunnel['host'])}"
+                self.route_label.set_tooltip_text(self._tunnel_tooltip(tunnel))
+            else:
+                self.route_label.set_tooltip_text(
+                    "only one Yggdrasil peer is up - if it drops, AIMless cannot be reached")
+            self.route_label.set_markup(
+                f"<span foreground='{C['away']}'>●  at risk - one peer left</span>  ·  "
+                f"peers {st['peers_up']}/{st['peers_total']}{tail}")
+            self._set_route_icon(first_icon(
+                "network-wireless-signal-weak-symbolic", "network-wireless-signal-ok-symbolic"))
         else:
             tail = ""
             if tunnel is not None:
@@ -3519,33 +3532,9 @@ class AimlessWindow(Gtk.Window):
             self.route_label.set_markup(
                 f"<span foreground='{C['online']}'>●  online</span>  -  {st['address']}  ·  "
                 f"peers {st['peers_up']}/{st['peers_total']}{tail}")
-            self._set_peers_label(st)
             self._set_route_icon(first_icon(
                 "network-wireless-signal-excellent-symbolic", "applications-internet"))
         self.refresh_self_id()
-
-    def _set_peers_label(self, st):
-        """The peers button: how many peers are up, and the best round trip.
-
-        The count alone never said anything, so it says more: how many work,
-        and how far away the fastest one is.
-        """
-        details = st.get("peer_details") or []
-        up = [p for p in details if p.get("up")]
-        label = f"peers {st['peers_up']}/{st['peers_total']}"
-        latencies = [p.get("latency_ms") for p in up if p.get("latency_ms")]
-        if latencies:
-            label += f" · {min(latencies)} ms"
-        broken = [p for p in details if p.get("error")]
-        if broken:
-            label += f" · {len(broken)} broken"
-        self.peers_label.set_text(label)
-        if broken:
-            self.peers_label.set_tooltip_text(
-                "A peer could not be used:\n"
-                + "\n".join(f"{p.get('uri')}: {p.get('error')}" for p in broken))
-        else:
-            self.peers_label.set_tooltip_text("Which nodes AIMless reaches the network through")
 
     # -- Keys & Identity --------------------------------------------------
     def _info_dialog(self, title, text, secondary=None, parent=None):
@@ -4511,6 +4500,8 @@ class TrayIcon:
     offline = False
     reason = ""
     locked = False
+    warn = False
+    warn_reason = ""
 
     def __init__(self, app):
         self.app = app
@@ -4519,6 +4510,8 @@ class TrayIcon:
         self.offline = False
         self.reason = ""
         self.locked = False
+        self.warn = False
+        self.warn_reason = ""
         self.menu = Gtk.Menu()
         mi_open = Gtk.MenuItem(label="Open AIMless")
         mi_open.connect("activate", self.on_open)
@@ -4575,7 +4568,19 @@ class TrayIcon:
         self.reason = reason or ""
         self._apply()
 
+    def set_warn(self, warn, reason=""):
+        """Mark the node as one peer away from being unreachable.
+
+        Still on the network, but with a single link left: if that peer goes,
+        the node is cut off. The running man turns amber - different from
+        yellow (fine) and red (gone).
+        """
+        self.warn = bool(warn)
+        self.warn_reason = reason or ""
+        self._apply()
+
     def _tooltip(self):
+        # Offline wins over at risk: the node is cut off, not fragile.
         if self.offline:
             head = f"{APP_NAME} - OFFLINE"
             if self.unread:
@@ -4583,6 +4588,15 @@ class TrayIcon:
             lines = [head]
             if self.reason:
                 lines.append(self.reason)
+            lines.append("Left-click to open Messages")
+            return "\n".join(lines)
+        if self.warn:
+            head = f"{APP_NAME} - AT RISK"
+            if self.unread:
+                head += f" - {self.unread} unread"
+            lines = [head]
+            if self.warn_reason:
+                lines.append(self.warn_reason)
             lines.append("Left-click to open Messages")
             return "\n".join(lines)
         if self.unread:
@@ -4597,6 +4611,9 @@ class TrayIcon:
     def _status_line(self):
         if self.offline:
             return f"Status: offline - {self.reason}" if self.reason else "Status: offline"
+        if self.warn:
+            return (f"Status: at risk - {self.warn_reason}" if self.warn_reason
+                    else "Status: at risk")
         if self.unread:
             if self.locked:
                 return f"Status: locked - {self.unread} message(s) waiting"
@@ -4610,7 +4627,8 @@ class TrayIcon:
         if not getattr(self, "have_tray", False):
             return
         try:
-            self.icon.set_from_icon_name(tray_icon_name(self.unread > 0, self.offline))
+            self.icon.set_from_icon_name(tray_icon_name(self.unread > 0, self.offline,
+                                                        self.warn))
             self.icon.set_tooltip_text(self._tooltip())
         except Exception:
             pass
@@ -4746,6 +4764,9 @@ class AimlessApp:
         self._island = False
         self._island_reason = ""
         self._island_timer = None
+        # None means "not told the tray yet" - the first reading always
+        # applies, so the tray never keeps a stale state.
+        self._peer_risk = None
         self._offline_notified = False
         # Locked state: the app runs at login without the passphrase, so it
         # cannot decrypt anything - but the daemon keeps journaling what
@@ -5481,6 +5502,7 @@ class AimlessApp:
         if up > 0:
             self._cancel_island_timer()
             self._set_island(False)
+            self._set_peer_risk(up, peers)
             return
         # No peer is up - so the node cannot reach the overlay and the
         # buddies cannot reach us. With no peers configured at all there is
@@ -5496,6 +5518,33 @@ class AimlessApp:
         elif self._island_timer is None and not self._island:
             self._island_timer = GLib.timeout_add_seconds(ISLAND_GRACE_SECONDS,
                                                           self._island_grace_expired)
+
+    def _set_peer_risk(self, up, total):
+        """Say something when only one peer is left.
+
+        Losing a few peers is not worth a warning: the node is still on the
+        network and still has more than one way in and out. But when exactly
+        one link is left, that link is the only way through - one failure away
+        from being cut off - so the tray says so (amber), and says it once.
+
+        A daemon that was asked for a single peer is not warned about: it has
+        all the redundancy it asked for.
+        """
+        at_risk = (up == 1 and total > 1)
+        reason = ("only one peer is up - if it drops, AIMless cannot be reached"
+                  if at_risk else "")
+        if at_risk == self._peer_risk:
+            return
+        self._peer_risk = at_risk
+        tray = getattr(self, "tray", None)
+        if tray is not None:
+            try:
+                tray.set_warn(at_risk, reason)
+            except Exception:
+                pass
+        if at_risk:
+            self._notify(APP_NAME, "only one Yggdrasil peer is up - if it drops, "
+                                  "AIMless cannot be reached")
 
     def _push_tray_state(self):
         tray = getattr(self, "tray", None)

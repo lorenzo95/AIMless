@@ -2002,6 +2002,9 @@ def test_app_icon_has_an_offline_variant():
             pixbuf = appicon.render(size, unread, True)
             assert pixbuf is not None
             assert pixbuf.get_width() == size
+            warn_pixbuf = appicon.render(size, unread, False, True)
+            assert warn_pixbuf is not None
+            assert warn_pixbuf.get_width() == size
 
 
 def test_offline_icon_is_installed_in_the_theme(tmp_path, monkeypatch):
@@ -2011,7 +2014,7 @@ def test_offline_icon_is_installed_in_the_theme(tmp_path, monkeypatch):
 
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
     appicon.install()
-    for name, unread, offline in appicon.variants():
+    for name, unread, offline, warn in appicon.variants():
         assert appicon.has_icon(name), f"{name} is missing from the icon theme"
 
 
@@ -2473,6 +2476,53 @@ def test_the_peer_list_can_restore_the_built_in_peers(gtk_app):
 
     box._on_restore(None)
     assert box.get_peers() == defaults, "the built-in peers were not restored"
+
+
+def test_one_peer_left_is_a_warning_but_losing_a_few_is_not(tmp_path, monkeypatch):
+    """Losing a few peers is not worth a warning - the node still has more
+    than one way in and out. Exactly one peer left is: that link is the only
+    way through, so one failure away from being cut off."""
+    app = _peer_app(tmp_path, monkeypatch, {"peers_total": 5, "peers_up": 5})
+    told = []
+    app._notify = lambda title, body: told.append((title, body))
+
+    class _Tray:
+        have_tray = True
+        warn = None
+
+        def set_warn(self, warn, reason=""):
+            self.warn = warn
+
+    tray = _Tray()
+    app.tray = tray
+
+    app._set_peer_risk(3, 5)
+    assert tray.warn is False, "losing a few peers must not warn"
+
+    app._set_peer_risk(1, 5)
+    assert tray.warn is True, "one peer left must warn"
+    assert told, "the warning has to be said out loud once"
+
+    # A daemon that was asked for a single peer has all the redundancy it
+    # asked for - that is not a warning.
+    told.clear()
+    app._set_peer_risk(1, 1)
+    assert tray.warn is False, "a single configured peer is not a warning"
+    assert not told, "and it must not be announced"
+
+
+def test_the_at_risk_icon_is_amber_and_loses_to_offline():
+    from aimless import appicon
+    assert appicon.icon_name(False, False, True) == appicon.WARN_ICON_NAME
+    assert appicon.icon_name(True, False, True) == appicon.WARN_UNREAD_ICON_NAME
+    # Offline is the more urgent fact.
+    assert appicon.icon_name(False, True, True) == appicon.OFFLINE_ICON_NAME
+    assert appicon.icon_name(True, True, True) == appicon.OFFLINE_UNREAD_ICON_NAME
+    # And the normal states are unchanged.
+    assert appicon.icon_name(False, False, False) == appicon.ICON_NAME
+    assert appicon.icon_name(True, False, False) == appicon.UNREAD_ICON_NAME
+    names = [v[0] for v in appicon.variants()]
+    assert len(names) == len(set(names)), "the icon variants must be distinct"
 
 
 def test_island_is_cleared_when_the_peers_come_back(tmp_path, monkeypatch):

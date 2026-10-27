@@ -107,6 +107,19 @@ The status bar shows how many peers are up and how far the fastest one is. **Opt
 
 While no peer answers, the bar reads *"connecting - no Yggdrasil peers yet"* - and the tray turns red, because a node with no peers cannot be reached by anybody. If you emptied the list by accident, **Restore the built-in peers** puts it back.
 
+### When the tray warns
+
+The node is on the network as long as **one** peer is up, so the count alone is not the interesting number - the redundancy is:
+
+| Peers up | What the tray shows | Why |
+|---|---|---|
+| all of them | yellow running man | nothing to say |
+| some, but at least two | yellow running man | still more than one way in and out; losing a few peers is not worth a warning |
+| **exactly one** | **amber running man** | that link is the only way through - one failure away from being cut off |
+| none | **red running man** | the node is an island; nobody can reach you |
+
+A daemon that was deliberately configured with a single peer is not warned about: it has all the redundancy it asked for.
+
 ### Where to set them
 
 | Where | How | Notes |
@@ -159,7 +172,9 @@ The daemon keeps running on its own and only advertises you as *present* while a
 |---|---|
 | yellow running man | attached - your buddies see you as available |
 | yellow running man + red badge | attached, and something is unread (or waiting, if the app is still locked) |
-| **red running man** | **not attached** - the daemon is not hearing us; your buddies see you as offline |
+| **amber running man** | **at risk** - only one peer is left, so that one link is the only way in and out. One failure away from being cut off |
+| amber running man + red badge | at risk *and* something is unread |
+| **red running man** | **not attached** - the daemon is not hearing us, or no peer is up; your buddies see you as offline |
 | red running man + red badge | not attached *and* something is unread |
 
 The tooltip says why, the right-click menu shows the same state as a *Status:* line, and a desktop notification fires when you go offline and again when you come back. Going offline is detected from our own traffic to the daemon: if the daemon stops answering for 15 seconds the icon turns red, which is before the daemon itself drops us to "client offline" after 30.
