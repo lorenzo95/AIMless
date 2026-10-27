@@ -5,7 +5,7 @@ import time
 
 from . import crypto, protocol, paths
 from . import tunnel
-from .daemon import DaemonClient, Client, DaemonError
+from .daemon import presence_state, DaemonClient, Client, DaemonError
 from .service import Sync
 from .store import Store
 
@@ -190,7 +190,6 @@ def cmd_list(args):
         if petname == "_self":
             continue
         p = presence.get(info["node"], {})
-        state = "online" if p.get("online") else "offline"
         screen = info.get("screen", "?")
         away = ""
         if p.get("status_payload"):
@@ -202,7 +201,24 @@ def cmd_list(args):
                     screen = st["screen"]
             except (ValueError, KeyError):
                 pass
-        print(f"  {petname:<16} {state:<8} {screen}{away}")
+        state = buddy_state(p, client)
+        print(f"  {petname:<16} {state:<10} {screen}{away}")
+
+
+def buddy_state(p, client) -> str:
+    """The state of one buddy for `aimless list`.
+
+    The same states the window shows: a buddy whose client is closed is
+    reachable, but nobody is there - "no client", not "online".
+    """
+    online, _away, client_offline = presence_state(p, client)
+    # "no client" wins: the node is reachable, the person is not at the
+    # keyboard - the same order the window uses.
+    if client_offline:
+        return "no client"
+    if not online:
+        return "offline"
+    return "online"
 
 
 def cmd_send(args):

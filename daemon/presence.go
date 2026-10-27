@@ -27,12 +27,6 @@ type peerPresence struct {
 	out      *statusOut
 }
 
-// attachedMarker is the status payload for "a client is attached, but it has
-// not set a status of its own". The presence protocol reads an empty payload
-// as "no client attached", so this only has to be non-empty; the buddy's
-// client tries to decrypt it, fails, and shows the buddy as simply online.
-var attachedMarker = []byte{0x01}
-
 type Presence struct {
 	mu            sync.Mutex
 	mail          *Mail
@@ -196,9 +190,11 @@ func (p *Presence) statusFor(pub ed25519.PublicKey) (seq uint64, payload []byte,
 	case st != nil:
 		return st.seq, st.payload, true
 	default:
-		// A client is attached but it has not set a status. Say so with a
-		// non-empty marker: an empty payload would mean the opposite.
-		return 0, attachedMarker, true
+		// A client is attached but it has not set a status of its own:
+		// there is nothing to say. An empty payload would mean the opposite
+		// ("no client"), and a made-up payload would be a status the buddy
+		// cannot decrypt.
+		return 0, nil, false
 	}
 }
 

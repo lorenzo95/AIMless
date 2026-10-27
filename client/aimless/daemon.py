@@ -13,6 +13,8 @@ EVENT_OPS = ("recv", "acked")
 
 RESPONSE_MAP = {
     "send": "queued",
+    "block": "blocked",
+    "unblock": "unblocked",
     "setpeers": "peers",
     "sendfile": "queued",
     "watch": "watching",
@@ -236,6 +238,33 @@ class DaemonClient:
     def close(self):
         self._stop.set()
         self._close_socket()
+
+
+def presence_state(p, client):
+    """(online, away, client_offline) for a daemon presence entry.
+
+    One implementation for the window and the command line: they used to
+    disagree about the same buddy - the CLI called a buddy with a closed
+    client "online" while the window showed "client offline".
+
+    `client_attached` comes from the peer's daemon: it only advertises a
+    client while one is attached, so an always-on daemon with no client looks
+    "client offline" even though messages are still delivered and queued.
+    """
+    if not bool(p.get("online")):
+        return False, None, False
+    if not p.get("client_attached", True):
+        return False, "client offline - messages will be delivered", True
+    away = None
+    payload = p.get("status_payload")
+    if payload:
+        try:
+            st = client.decrypt_status(payload)
+            if st.get("away"):
+                away = st["away"]
+        except Exception:
+            pass
+    return True, away, False
 
 
 class Client:

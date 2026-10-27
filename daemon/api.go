@@ -19,7 +19,7 @@ import (
 	"github.com/yggdrasil-network/yggdrasil-go/src/core"
 )
 
-const buildVersion = "aimlessd/0.9.10"
+const buildVersion = "aimlessd/0.9.11"
 
 // protocolVersion identifies the wire format spoken to other daemons. Peers on a
 // different version are ignored rather than misparsed; there is no compat layer.
@@ -182,6 +182,11 @@ func (s *APIServer) dispatch(conn *apiConn, req apiMessage) {
 	case "whoami":
 		s.replyReq(conn, req, apiMessage{Op: "whoami", Address: s.node.Address.String(), Key: hex.EncodeToString(s.node.Pub), Pid: os.Getpid()})
 	case "status":
+		// GetPeers reads the peer's RTT sample without holding the lock the
+		// peer actor writes it with, so `go test -race` can flag a race inside
+		// ironwood when a peer completes its handshake at the same moment.
+		// It is upstream (ironwood network/peers.go), harmless in practice -
+		// the sample is only used for the latency readout.
 		peers := s.node.Core.GetPeers()
 		out := make([]peerStatus, 0, len(peers))
 		for _, p := range peers {

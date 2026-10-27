@@ -37,7 +37,7 @@ from . import appicon
 from . import pending
 from . import peers as peersmod
 from . import keys as keysmod
-from .daemon import DaemonClient, Client, DaemonError
+from .daemon import DaemonClient, Client, DaemonError, presence_state
 from .service import Sync
 from .store import Store
 from . import __version__ as client_version
@@ -1163,26 +1163,27 @@ class Session:
         return self.self_node
 
 
-def _presence_state(p, client):
-    """(online, away, client_offline) for a daemon presence entry.
+# The presence state is shared with the command line, so the two can never
+# disagree about the same buddy.
+_presence_state = presence_state
 
-    `client_attached` comes from the peer's daemon: it only advertises a client
-    while one is attached, so an always-on daemon with no client looks "client
-    offline" even though messages are still delivered and queued."""
-    if not bool(p.get("online")):
-        return False, None, False
-    if not p.get("client_attached", True):
-        return False, "client offline - messages will be delivered", True
-    away = None
-    payload = p.get("status_payload")
-    if payload:
-        try:
-            st = client.decrypt_status(payload)
-            if st.get("away"):
-                away = st["away"]
-        except Exception:
-            pass
-    return True, away, False
+
+def _self_state(st):
+    """(colour, text) for how our own node is doing.
+
+    One place, because the route bar and the activity line used to colour the
+    same state differently - the activity line said green "you are online"
+    while the bar next to it said amber "at risk - one peer left".
+    """
+    up = st.get("peers_up", 0)
+    total = st.get("peers_total", 0)
+    if up <= 0:
+        return C["away"], "connecting - no Yggdrasil peers yet"
+    if up == 1 and total > 1:
+        # One link left: still on the network, but one failure away from
+        # being cut off.
+        return C["away"], "at risk - one peer left"
+    return C["online"], "online"
 
 
 def _presence_color(online, away):
@@ -1216,14 +1217,16 @@ def _sidebar_title_markup(thread, self_node):
         pb = thread.get("presence_by_node", {})
         others = [n for n in thread.get("members", {}) if n != self_node]
         online = sum(1 for n in others if pb.get(n, {}).get("online"))
-        # "Available" is online and not away - somebody who is away is still
-        # reachable, but not at the keyboard.
+        # "Available" is reachable and actually there: not away, and the
+        # buddy's client is attached. Somebody who is away is still reachable,
+        # but not at the keyboard - and the count and the dot have to agree.
         available = sum(1 for n in others
-                        if pb.get(n, {}).get("online") and not pb.get(n, {}).get("away"))
+                        if pb.get(n, {}).get("online") and not pb.get(n, {}).get("away")
+                        and not pb.get(n, {}).get("client_offline"))
         away = sum(1 for n in others if pb.get(n, {}).get("away"))
-        dot_color = C["online"] if available else (C["away"] if away else C["offline"])
+        dot_color = C["online"] if available else (C["away"] if online else C["offline"])
         return (f"<span foreground='{dot_color}'>●</span>  "
-                f"<span size='small' foreground='{C['subtitle']}'>{online}/{len(others)}</span>  "
+                f"<span size='small' foreground='{C['subtitle']}'>{available}/{len(others)}</span>  "
                 f"<b>{esc(thread['screen'])}</b>")
     dot_color = _presence_color(thread["online"], thread["away"])
     return f"<span foreground='{dot_color}'>●</span>  <b>{esc(thread['screen'])}</b>"
@@ -1233,9 +1236,11 @@ def _room_header_markup(thread, self_node):
     dots = _room_dots_markup(thread.get("members", {}), thread.get("presence_by_node", {}), self_node)
     others = [n for n in thread.get("members", {}) if n != self_node]
     pb = thread.get("presence_by_node", {})
-    online = sum(1 for n in others if pb.get(n, {}).get("online"))
+    available = sum(1 for n in others
+                    if pb.get(n, {}).get("online") and not pb.get(n, {}).get("away")
+                    and not pb.get(n, {}).get("client_offline"))
     return (f"<big><b>{GLib.markup_escape_text(thread['screen'])}</b></big>  {dots}  "
-            f"<span size='small' foreground='{C['subtitle']}'>{online}/{len(others)} online</span>")
+            f"<span size='small' foreground='{C['subtitle']}'>{available}/{len(others)} available</span>")
 
 
 def _free_petname(contacts, base):
@@ -2904,7 +2909,9 @@ class ContactsView(Gtk.Box):
             elif away:
                 color, state = C["away"], away
             else:
-                color = C["online"] if online else C["muted"]
+                # The same grey the sidebar uses for an offline buddy - two
+                # tabs must not paint the same person in two shades.
+                color = C["online"] if online else C["offline"]
                 state = "online" if online else "offline"
             title.set_markup(
                 f"<b>{GLib.markup_escape_text(label)}</b> "
@@ -3051,8 +3058,8 @@ class ActivityView(Gtk.Box):
                     self._version_warned = True
                     self.log(f"⚠ daemon {build} is too old for this client (needs ≥ {need}) "
                              f"- update aimlessd-linux-amd64, then `aimless stop` and reopen")
-        state = (f"<span foreground='{C['online']}'>●  you are online</span>" if st["peers_up"] > 0
-                 else f"<span foreground='{C['away']}'>●  connecting - no Yggdrasil peers yet</span>")
+        colour, text = _self_state(st)
+        state = f"<span foreground='{colour}'>●  {text}</span>"
         self.info_label.set_markup(
             f"{state}  -  address <b>{st['address']}</b>  ·  peers {st['peers_up']}/{st['peers_total']}\n"
             f"daemon: {build}  ·  client: aimless/{client_version}{version_note}{tnote}")
@@ -3438,7 +3445,11 @@ class AimlessWindow(Gtk.Window):
             presence = {}
             for t in self.messages.threads.values():
                 t["online"] = False
+            # Both tabs have to hear about it, or they disagree about the
+            # same people: the sidebar greys out, the contacts tab keeps the
+            # last green it had.
             self.messages.refresh_presence(presence)
+            self.contacts.refresh_presence(presence)
 
         run_async(worker, on_done=done, on_error=fail)
         return True
@@ -3524,45 +3535,27 @@ class AimlessWindow(Gtk.Window):
             self._set_route_icon(first_icon(
                 "network-wireless-signal-none-symbolic", "network-offline-symbolic",
                 "network-error-symbolic"))
-        elif st["peers_up"] == 0:
-            tail = ""
-            if tunnel is not None:
-                tail = f"  ·  ↗ {GLib.markup_escape_text(tunnel['host'])}"
-                self.route_label.set_tooltip_text(self._tunnel_tooltip(tunnel))
-            else:
-                self.route_label.set_tooltip_text(None)
-            self.route_label.set_markup(
-                f"<span foreground='{C['away']}'>●  connecting - no Yggdrasil peers yet</span>{tail}")
-            self._set_route_icon(first_icon(
-                "network-wireless-signal-weak-symbolic", "network-wireless-signal-ok-symbolic",
-                "network-idle-symbolic"))
-        elif st["peers_up"] == 1 and st["peers_total"] > 1:
-            # One link left: still on the network, but one failure away from
-            # being cut off. Worth saying - losing a few peers is not.
-            tail = ""
-            if tunnel is not None:
-                tail = f"  ·  ↗ {GLib.markup_escape_text(tunnel['host'])}"
-                self.route_label.set_tooltip_text(self._tunnel_tooltip(tunnel))
-            else:
-                self.route_label.set_tooltip_text(
-                    "only one Yggdrasil peer is up - if it drops, AIMless cannot be reached")
-            self.route_label.set_markup(
-                f"<span foreground='{C['away']}'>●  at risk - one peer left</span>  ·  "
-                f"peers {st['peers_up']}/{st['peers_total']}{tail}")
-            self._set_route_icon(first_icon(
-                "network-wireless-signal-weak-symbolic", "network-wireless-signal-ok-symbolic"))
         else:
             tail = ""
             if tunnel is not None:
                 tail = f"  ·  ↗ {GLib.markup_escape_text(tunnel['host'])}"
                 self.route_label.set_tooltip_text(self._tunnel_tooltip(tunnel))
+            elif st.get("peers_up", 0) == 1 and st.get("peers_total", 0) > 1:
+                self.route_label.set_tooltip_text(
+                    "only one Yggdrasil peer is up - if it drops, AIMless cannot be reached")
             else:
                 self.route_label.set_tooltip_text(None)
+            colour, text = _self_state(st)
             self.route_label.set_markup(
-                f"<span foreground='{C['online']}'>●  online</span>  -  {st['address']}  ·  "
+                f"<span foreground='{colour}'>●  {text}</span>  -  {st['address']}  ·  "
                 f"peers {st['peers_up']}/{st['peers_total']}{tail}")
-            self._set_route_icon(first_icon(
-                "network-wireless-signal-excellent-symbolic", "applications-internet"))
+            if st.get("peers_up", 0) > 0:
+                self._set_route_icon(first_icon(
+                    "network-wireless-signal-excellent-symbolic", "applications-internet"))
+            else:
+                self._set_route_icon(first_icon(
+                    "network-wireless-signal-weak-symbolic", "network-wireless-signal-ok-symbolic",
+                    "network-idle-symbolic"))
         self.refresh_self_id()
 
     # -- Keys & Identity --------------------------------------------------

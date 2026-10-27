@@ -279,7 +279,9 @@ The **client** owns identity, encryption, and display. The **daemon** is a dumb,
 - **MSG** - sealed box from the sender's client. ACKed; the sender retries until then.
 - **STATUS** - sealed screen/away blob. The daemon only sends the client's real status while a client has been active recently (a heartbeat); with no client attached it sends an **empty STATUS** as a "mailbox" marker, so buddies show *"client offline - messages will be delivered"* instead of available. Delivery does not depend on this.
 
-  The state is sent when it **changes**, not on every tick: a buddy that heard "client offline" while the app was closed is told when a client is there again, and told when it goes away. And on the receiving side an away buddy is **amber**, not green - being reachable is not the same as being at the keyboard.
+  The daemon re-sends the state on every tick: a packet sent before the route to the peer is up is simply lost, and a state that is only announced once may never arrive. And on the receiving side an away buddy is **amber**, not green - being reachable is not the same as being at the keyboard.
+
+  The same states are used everywhere: the sidebar, the contacts list, the room rows and `aimless list` all say the same thing about the same buddy, in the same colours.
 - **PROBE** - presence ping. Liveness comes from probe/status only (not from message/ACK traffic), so a clientless always-on daemon can age out of buddies' presence even while it relays and ACKs messages.
 - **FILE** - 20-byte cleartext routing header (transfer id + chunk index/total) + sealed chunk body. The daemon keys/joins chunks, but filename, MIME, hash, and contents stay encrypted. Chunks persist until the client reassembles and verifies (SHA-256), ACKs consumption.
 

@@ -1344,10 +1344,12 @@ def test_room_header_markup_and_live_update(gtk_app):
     assert header.count("●") == 2, "header shows one dot per member"
     colors = gtkui.C
     assert colors["online"] in header and colors["away"] in header, "client-offline member is orange"
-    assert "1/2 online" in header
+    # The count says how many are actually there - a member whose client is
+    # closed is reachable, but nobody is at the keyboard.
+    assert "1/2 available" in header
 
     win.messages.refresh_presence({b_node: {"online": False}, "cd" * 32: {"online": False}})
-    assert "0/2 online" in win.messages.conversation_header.get_label()
+    assert "0/2 available" in win.messages.conversation_header.get_label()
 
     # DM selection hides the delete button
     win.messages.thread_list.select_row(win.messages.threads[b_node]["row"])
@@ -1902,6 +1904,92 @@ def test_the_self_id_label_takes_its_colour_from_the_theme(gtk_app):
     # The key label is the muted one.
     classes = win.self_key_label.get_style_context().list_classes()
     assert "muted" in classes, f"the key label should be muted, has {classes}"
+
+
+def test_the_two_tabs_paint_an_offline_buddy_the_same_grey():
+    """The contacts tab and the messages sidebar must not paint the same
+    person in two shades - switching tabs made the buddy look like it had
+    changed state."""
+    from aimless import gtkui
+    offline = gtkui.C["offline"]
+    contacts = gtkui.ContactsView.__new__(gtkui.ContactsView)
+    # the row is painted by refresh_presence; check the colour it would use
+    import inspect
+    src = inspect.getsource(gtkui.ContactsView.refresh_presence)
+    assert 'C["offline"]' in src, "the contacts tab should use the offline colour"
+    assert 'C["muted"]' not in src.split("else:")[-1], "the contacts tab uses a different grey"
+
+
+def test_a_room_row_counts_the_same_people_as_its_dot():
+    """The dot and the "N/M" count are computed from different filters, so a
+    room whose only member was away showed an amber dot next to "1/1"."""
+    from aimless import gtkui
+    thread = {
+        "is_room": True,
+        "screen": "Room",
+        "members": {"aa" * 32: {"node": "aa" * 32, "screen": "A"},
+                    "bb" * 32: {"node": "bb" * 32, "screen": "B"}},
+        "presence_by_node": {
+            "aa" * 32: {"online": True, "away": None, "client_offline": False},
+            "bb" * 32: {"online": True, "away": "brb", "client_offline": False},
+        },
+    }
+    # One member is at the keyboard, one is away: green, and the count says
+    # one of the two is available.
+    markup = gtkui._sidebar_title_markup(thread, "cc" * 32)
+    assert "1/2" in markup, markup
+    assert f"foreground='{gtkui.C['online']}'" in markup, markup
+
+    # Nobody is available: amber, and the count has to say 0 - it used to say
+    # "1/1" next to an amber dot.
+    thread["presence_by_node"]["aa" * 32] = {"online": True, "away": "brb",
+                                              "client_offline": False}
+    markup = gtkui._sidebar_title_markup(thread, "cc" * 32)
+    assert "0/2" in markup, markup
+    assert f"foreground='{gtkui.C['away']}'" in markup, markup
+
+    # A member whose client is closed is not available either.
+    thread["presence_by_node"] = {
+        "aa" * 32: {"online": True, "away": None, "client_offline": True},
+        "bb" * 32: {"online": True, "away": None, "client_offline": False},
+    }
+    markup = gtkui._sidebar_title_markup(thread, "cc" * 32)
+    assert "1/2" in markup, markup
+
+
+def test_a_failed_presence_poll_reaches_both_tabs(gtk_app, monkeypatch):
+    """When the daemon's presence op fails, the sidebar greys out - and the
+    contacts tab used to keep its last green, so the two tabs claimed
+    different liveness for the same people."""
+    win = gtk_app["win"]
+    seen = []
+    monkeypatch.setattr(win.messages, "refresh_presence",
+                        lambda p: seen.append("messages"))
+    monkeypatch.setattr(win.contacts, "refresh_presence",
+                        lambda p: seen.append("contacts"))
+
+    def boom(*_a, **_kw):
+        raise RuntimeError("presence op failed")
+    monkeypatch.setattr(win.session.client, "presence", boom)
+
+    win.poll_presence()
+    assert _pump(None, lambda: "contacts" in seen), \
+        "the contacts tab was not told that the presence poll failed"
+    assert "messages" in seen, "the sidebar was not told either"
+
+
+def test_the_status_line_and_the_route_bar_agree():
+    """They are two views of the same reading - they used to colour the same
+    state differently (green "you are online" next to amber "at risk")."""
+    from aimless import gtkui
+    healthy = {"peers_up": 5, "peers_total": 5}
+    assert gtkui._self_state(healthy) == (gtkui.C["online"], "online")
+    at_risk = {"peers_up": 1, "peers_total": 5}
+    assert gtkui._self_state(at_risk) == (gtkui.C["away"], "at risk - one peer left")
+    island = {"peers_up": 0, "peers_total": 5}
+    assert gtkui._self_state(island)[0] == gtkui.C["away"]
+    # A single configured peer is not a warning.
+    assert gtkui._self_state({"peers_up": 1, "peers_total": 1})[0] == gtkui.C["online"]
 
 
 def test_away_beats_online_in_the_presence_dot():
