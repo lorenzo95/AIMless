@@ -1185,13 +1185,25 @@ def _presence_state(p, client):
     return True, away, False
 
 
+def _presence_color(online, away):
+    """The colour of a presence dot.
+
+    Away wins over online. A buddy who set themselves away is still
+    reachable, but not at the keyboard - and that has to look different from
+    "here I am". The offline case stays grey, the away case is amber.
+    """
+    if away:
+        return C["away"]
+    return C["online"] if online else C["offline"]
+
+
 def _room_dots_markup(members, presence_by_node, exclude):
     """One presence dot per room member (sorted like the title), excluding self."""
     parts = []
     for screen, node in sorted((m.get("screen") or n[:8], n) for n, m in members.items()
                                if n != exclude):
         p = presence_by_node.get(node, {})
-        color = C["online"] if p.get("online") else (C["away"] if p.get("away") else C["offline"])
+        color = _presence_color(p.get("online"), p.get("away"))
         parts.append(f"<span foreground='{color}'>●</span>")
     return "".join(parts)
 
@@ -1204,11 +1216,16 @@ def _sidebar_title_markup(thread, self_node):
         pb = thread.get("presence_by_node", {})
         others = [n for n in thread.get("members", {}) if n != self_node]
         online = sum(1 for n in others if pb.get(n, {}).get("online"))
-        dot_color = C["online"] if online else C["offline"]
+        # "Available" is online and not away - somebody who is away is still
+        # reachable, but not at the keyboard.
+        available = sum(1 for n in others
+                        if pb.get(n, {}).get("online") and not pb.get(n, {}).get("away"))
+        away = sum(1 for n in others if pb.get(n, {}).get("away"))
+        dot_color = C["online"] if available else (C["away"] if away else C["offline"])
         return (f"<span foreground='{dot_color}'>●</span>  "
                 f"<span size='small' foreground='{C['subtitle']}'>{online}/{len(others)}</span>  "
                 f"<b>{esc(thread['screen'])}</b>")
-    dot_color = C["online"] if thread["online"] else (C["away"] if thread["away"] else C["offline"])
+    dot_color = _presence_color(thread["online"], thread["away"])
     return f"<span foreground='{dot_color}'>●</span>  <b>{esc(thread['screen'])}</b>"
 
 
@@ -2144,7 +2161,7 @@ class MessagesView(Gtk.Box):
                          if n != session.self_node)
         for screen, n in entries:
             p = pb.get(n, {})
-            color = C["online"] if p.get("online") else (C["away"] if p.get("away") else C["offline"])
+            color = _presence_color(p.get("online"), p.get("away"))
             known = n in contact_nodes
             glyph = "●" if known else "○"
             btn = Gtk.Button()
@@ -2881,9 +2898,11 @@ class ContactsView(Gtk.Box):
                 # synthetic blocked-stranger row: prefer the stored screen name
                 node = petname
                 label = self.app.session.cache.blocked_screen(petname) or label
-            online, _away, client_offline = _presence_state(presence.get(node, {}), client)
+            online, away, client_offline = _presence_state(presence.get(node, {}), client)
             if client_offline:
                 color, state = C["away"], "client offline"
+            elif away:
+                color, state = C["away"], away
             else:
                 color = C["online"] if online else C["muted"]
                 state = "online" if online else "offline"

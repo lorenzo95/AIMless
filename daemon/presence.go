@@ -27,6 +27,12 @@ type peerPresence struct {
 	out      *statusOut
 }
 
+// attachedMarker is the status payload for "a client is attached, but it has
+// not set a status of its own". The presence protocol reads an empty payload
+// as "no client attached", so this only has to be non-empty; the buddy's
+// client tries to decrypt it, fails, and shows the buddy as simply online.
+var attachedMarker = []byte{0x01}
+
 type Presence struct {
 	mu            sync.Mutex
 	mail          *Mail
@@ -158,21 +164,41 @@ func (p *Presence) probeOne(pub ed25519.PublicKey) {
 		return
 	}
 	_ = p.mail.SendProbe(pub)
+	seq, payload, send := p.statusFor(pub)
+	if send {
+		_ = p.mail.SendStatus(pub, seq, payload)
+	}
+}
+
+// statusFor is what the buddy gets to hear about us.
+//
+// An empty payload means "no client attached" - that is the "client offline
+// (messages delivered)" marker. The client's own status carries the away
+// text.
+//
+// And when a client is attached but has never set a status, we still say
+// something: an empty payload would mean the opposite of the truth, and
+// sending nothing would leave the buddy with whatever it last heard - a
+// stale "client offline" from when the app was closed.
+//
+// It is re-sent every tick rather than only on a change: a packet sent
+// before the route to the peer is up is simply lost, and a state that is
+// only announced once may never arrive.
+func (p *Presence) statusFor(pub ed25519.PublicKey) (seq uint64, payload []byte, send bool) {
 	present := p.clientPresent()
 	p.mu.Lock()
-	pp := p.peers[hex.EncodeToString(pub)]
-	var st *statusOut
-	if pp != nil {
-		st = pp.out
-	}
-	p.mu.Unlock()
+	defer p.mu.Unlock()
+	pp := p.keyFor(pub)
+	st := pp.out
 	switch {
 	case !present:
-		// No client attached: send an empty STATUS as a "mailbox" marker so
-		// buddies show "client offline (messages delivered)" rather than online.
-		_ = p.mail.SendStatus(pub, 0, nil)
+		return 0, nil, true
 	case st != nil:
-		_ = p.mail.SendStatus(pub, st.seq, st.payload)
+		return st.seq, st.payload, true
+	default:
+		// A client is attached but it has not set a status. Say so with a
+		// non-empty marker: an empty payload would mean the opposite.
+		return 0, attachedMarker, true
 	}
 }
 

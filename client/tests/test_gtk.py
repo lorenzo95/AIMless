@@ -1904,6 +1904,26 @@ def test_the_self_id_label_takes_its_colour_from_the_theme(gtk_app):
     assert "muted" in classes, f"the key label should be muted, has {classes}"
 
 
+def test_away_beats_online_in_the_presence_dot():
+    """A buddy who set themselves away is still reachable, but not at the
+    keyboard - the dot has to say so instead of showing them as green."""
+    from aimless import gtkui
+    assert gtkui._presence_color(True, "brb") == gtkui.C["away"]
+    assert gtkui._presence_color(True, None) == gtkui.C["online"]
+    assert gtkui._presence_color(False, None) == gtkui.C["offline"]
+    assert gtkui._presence_color(False, "brb") == gtkui.C["away"]
+
+
+def test_the_sidebar_dot_is_amber_when_the_buddy_is_away():
+    from aimless import gtkui
+    markup = gtkui._sidebar_title_markup(
+        {"screen": "Bob", "online": True, "away": "managed"}, "me")
+    assert f"foreground='{gtkui.C['away']}'" in markup, markup
+    online = gtkui._sidebar_title_markup(
+        {"screen": "Bob", "online": True, "away": None}, "me")
+    assert f"foreground='{gtkui.C['online']}'" in online, online
+
+
 def test_icon_name_is_published_on_the_window(gtk_app):
     """GTK leaves _NET_WM_ICON_NAME holding the window title, so a panel
     resolving the taskbar icon by name looks up 'AIMless' - which does not

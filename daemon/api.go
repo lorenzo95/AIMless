@@ -19,7 +19,7 @@ import (
 	"github.com/yggdrasil-network/yggdrasil-go/src/core"
 )
 
-const buildVersion = "aimlessd/0.9.9"
+const buildVersion = "aimlessd/0.9.10"
 
 // protocolVersion identifies the wire format spoken to other daemons. Peers on a
 // different version are ignored rather than misparsed; there is no compat layer.
