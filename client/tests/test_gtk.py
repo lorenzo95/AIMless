@@ -1887,6 +1887,23 @@ def test_desktop_entry_lets_the_taskbar_find_us(tmp_path, monkeypatch):
     assert "Exec=aimless gui" in text
 
 
+def test_the_self_id_label_takes_its_colour_from_the_theme(gtk_app):
+    """The name at the right of the bar must look like the rest of the bar.
+
+    Hardcoding the colour in the markup left it on the old palette after a
+    theme switch, and Pango cannot carry a CSS class, so the name and the key
+    are two labels: one normal, one muted.
+    """
+    win = gtk_app["win"]
+    # The name carries no colour of its own - the theme's CSS gives it the
+    # normal text colour.
+    assert "foreground" not in (win.self_id_label.get_text() or "")
+
+    # The key label is the muted one.
+    classes = win.self_key_label.get_style_context().list_classes()
+    assert "muted" in classes, f"the key label should be muted, has {classes}"
+
+
 def test_icon_name_is_published_on_the_window(gtk_app):
     """GTK leaves _NET_WM_ICON_NAME holding the window title, so a panel
     resolving the taskbar icon by name looks up 'AIMless' - which does not
@@ -2986,7 +3003,7 @@ def test_route_bar_external_up(gtk_app, monkeypatch):
     monkeypatch.setattr(win.supervisor, "tunnel_state", lambda: state)
     win.refresh_route({"address": "200::1", "peers_up": 1, "peers_total": 1, "build": "x", "mtu": 0})
     assert "u@k3s-1" in win.route_label.get_text()
-    assert win.session.self_node[:8] in win.self_id_label.get_text()
+    assert win.session.self_node[:8] in win.self_key_label.get_text()
 
 
 def test_route_bar_tunnel_down(gtk_app, monkeypatch):

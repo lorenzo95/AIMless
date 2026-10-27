@@ -3136,9 +3136,17 @@ class AimlessWindow(Gtk.Window):
         route_bar.pack_start(self.route_icon, False, False, 0)
         self.route_label = Gtk.Label(label="daemon: starting …")
         route_bar.pack_start(self.route_label, False, False, 0)
+        # Two labels, not one: the name gets the normal text colour and the
+        # key the muted one, and both come from the theme's CSS - so a theme
+        # switch repaints them instead of leaving the old palette behind.
+        # (Pango markup cannot carry a CSS class, so this cannot be one
+        # label with two colours.)
         self.self_id_label = Gtk.Label()
         self.self_id_label.set_ellipsize(Pango.EllipsizeMode.END)
-        self.self_id_label.get_style_context().add_class("muted")
+        self.self_key_label = Gtk.Label()
+        self.self_key_label.set_ellipsize(Pango.EllipsizeMode.END)
+        self.self_key_label.get_style_context().add_class("muted")
+        route_bar.pack_end(self.self_key_label, False, False, 0)
         route_bar.pack_end(self.self_id_label, False, False, 0)
         root.pack_start(route_bar, False, False, 0)
         self._self_id = None
@@ -3463,13 +3471,15 @@ class AimlessWindow(Gtk.Window):
             return
         self._self_id = (screen, node)
         short = f"{node[:16]}…" if node else "-"
-        self.self_id_label.set_markup(
-            f"<span foreground='{C['muted2']}'>you: {GLib.markup_escape_text(screen)}</span>"
-            f"  ·  <span foreground='{C['subtitle']}'>{short}</span>")
+        # No hardcoded colours here: the theme's CSS gives the name the normal
+        # text colour and the key the muted one.
+        self.self_id_label.set_text(f"you: {screen}")
+        self.self_key_label.set_text(f"·  {short}")
         tip = f"node key: {node}"
         if self.session.pubkey_hex:
             tip += f"\nclient pubkey: {self.session.pubkey_hex}"
         self.self_id_label.set_tooltip_text(tip)
+        self.self_key_label.set_tooltip_text(tip)
 
     def refresh_route(self, st):
         tunnel = self.supervisor.tunnel_state() if self.supervisor else None
