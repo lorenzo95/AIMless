@@ -1,17 +1,21 @@
-# aimless
+# AIMless
 
-Serverless, end-to-end-encrypted chat over the [Yggdrasil](https://yggdrasil-network.github.io/) overlay. Message 1:1 or in group rooms, send files, and keep chatting when the other side is offline - no servers, no accounts, no ports to forward, no TUN device and no root. It's AIM for the mesh era: screens names, buddy lists, away messages, and durable store-and-forward.
+![The AIMless window: a conversation with a buddy, the buddy list on the left, and the connection state in the bar at the bottom](docs/images/screenshot.png)
 
-- **Serverless & account-free** - identity is an Ed25519 keypair; your address is derived from it.
-- **End-to-end encrypted** - per-recipient NaCl sealed boxes made by the client; the relay never sees plaintext.
-- **Durable** - messages and files are journaled and retried until delivered, even if the recipient is offline.
-- **Linux desktop + CLI** - a GTK app with a tray, plus a headless CLI.
+Serverless, end-to-end-encrypted chat over the [Yggdrasil](https://yggdrasil-network.github.io/) overlay network. No servers, no accounts, no ports to forward, no TUN device, no root.
+
+It is AIM for the mesh era: screen names, a buddy list, away messages, and messages that wait for you until you are back.
+
+- **End-to-end encrypted** - per-recipient NaCl sealed boxes, made by your client. The relay never sees plaintext.
+- **Serverless** - your identity is an Ed25519 keypair and your address is derived from it.
+- **Durable** - messages and files are journaled and retried until delivered, even if the other side is offline.
+- **A desktop app and a CLI** - a GTK app with a tray icon, plus a headless command line.
 
 ---
 
-## Try it in 60 seconds (Docker)
+## Try it in two minutes
 
-Runs the full GUI in your browser - nothing to install:
+### Docker - nothing to install but Docker
 
 ```sh
 docker run -d --name aimless-webtop --restart unless-stopped \
@@ -21,9 +25,9 @@ docker run -d --name aimless-webtop --restart unless-stopped \
   ghcr.io/lorenzo95/aimless/aimless-webtop:latest
 ```
 
-Open <http://localhost:8080/vnc.html> and enter the password (`aimless`). First run asks you to create an identity (passphrase + screen name).
+Open <http://localhost:8080/vnc.html>, password `aimless`. The first run asks you to create an identity.
 
-**See two clients talk to each other** - start a second container on another port/volume, then in the first window open *Contacts → Copy* and paste the invite into the second window's *Add a buddy*:
+**To see two clients talk to each other**, start a second one:
 
 ```sh
 docker run -d --name aimless-webtop2 --restart unless-stopped \
@@ -33,229 +37,183 @@ docker run -d --name aimless-webtop2 --restart unless-stopped \
   ghcr.io/lorenzo95/aimless/aimless-webtop:latest
 ```
 
-Open <http://localhost:8081/vnc.html>, add each other, and chat. Turn one off and send from the other - it arrives when it comes back.
+Open <http://localhost:8081/vnc.html>. In the first window choose **Contacts -> Copy**; in the second, **Contacts -> Add a buddy** and paste the invite. Say something. Now stop one container, send a message from the other, and start it again: the message is waiting for you.
 
-> The container has no audio and no notification daemon, so sound/notifications are silent there by design. Exposing the page publicly? Put it behind TLS + auth or an SSH tunnel, and change `VNC_PASS` - whoever reaches it gets your desktop.
+> The container has no audio and no notification daemon, so sound and notifications are silent there by design. If you expose the page to the internet, put it behind TLS and a password, and change `VNC_PASS` - whoever reaches that page gets your desktop.
 
-## Install on Linux
+### On your own machine - two files, nothing to build
 
 ```sh
 mkdir -p ~/.local/bin && cd ~/.local/bin
 wget https://raw.githubusercontent.com/lorenzo95/Aimless/main/dist/aimlessd-linux-amd64
 wget https://raw.githubusercontent.com/lorenzo95/Aimless/main/dist/aimless.pyz
 chmod +x aimlessd-linux-amd64 aimless.pyz
-./aimless.pyz            # first run creates your identity; after that: unlock + tray + window
-./aimless.pyz autostart  # optional: start the whole stack at login
-./aimless.pyz --version  # which build you're running
+./aimless.pyz
 ```
 
-Requires Linux, `python3` with `pynacl`, and the GTK stack (`python3-gi`, `gir1.2-gtk-3.0`). The daemon (`aimlessd`) is a static binary with no dependencies. If an old pip-installed client exists, remove it first (`pip uninstall aimless-client`).
+That is the whole install. The daemon is a static binary with no dependencies, and the client is Python that talks to the GTK 3 stack your desktop already has. For a second client, run `./aimless.pyz` in another terminal and copy the invite between them.
 
-The taskbar and tray icon is drawn with cairo, so `python3-cairo` (or `pip install aimless-client[gui]`) is needed for the running-man icon. Without it the app still runs, but the taskbar falls back to a generic icon and the app log says so.
-
-### First run
-
-Two steps, both in the window:
-
-1. **Your identity.** No identity on this machine yet: create one (a passphrase that protects your keys, plus a screen name) or restore a backup you exported earlier.
-2. **Your peers.** AIMless reaches the network through public peers. The built-in ones are nearby and checked, so you can keep them; the step also links to the current public list if you want to add one of your own. Skipping it is fine - the built-in list is already in place.
-
-After that it is unlock + tray + window, and the peers can be changed any time from **Options → Peers …**.
-
-The autostart entry runs `aimless tray` at login, and a login entry fires *before* the panel is up - so the app waits up to 15 seconds for a tray host to adopt its icon before it decides there is no tray. Without that wait it used to exit immediately, and the tray never came up after a reboot. `aimless autostart` (re)writes the entry; check it with `cat ~/.config/autostart/aimless-tray.desktop` if the tray is missing after a login.
-
-The autostarted app is **locked** - it starts without asking for your passphrase. It still tells you when a message arrives (badge, tooltip and a notification), it just cannot read it until you click the tray icon and unlock.
-
-**From source:**
+**If something is missing** (a bare container, a minimal server, a headless box):
 
 ```sh
-cd daemon && go build -o aimlessd . && ./aimlessd -datadir ~/.local/share/aimless/daemon
-cd ../client && pip install . && aimless
+sudo apt-get install -y python3 python3-nacl python3-gi gir1.2-gtk-3.0 python3-cairo
 ```
 
-## Files and layout
+| Package | Why |
+|---|---|
+| `python3-nacl` | the encryption library (PyNaCl) |
+| `python3-gi`, `gir1.2-gtk-3.0` | the GTK 3 bindings the app draws with |
+| `python3-cairo` | only for the running-man icon - without it the app still runs, the taskbar shows a generic icon, and the app log says so |
 
-Everything lives under one root - `~/.local/share/aimless` by default, or `$AIMLESS_HOME` - split by owner. `aimless paths` prints the resolved locations.
+If you have an old pip-installed client lying around, remove it first: `pip uninstall aimless-client`.
 
-```
-~/.local/share/aimless/
-├── client/    identity.json · contacts.json · state.db · prefs.json · attachments/
-├── daemon/    node.key · config.json · aimless.db · contacts.json · blocked.json · lock · api.sock
-├── logs/      app.log · daemon.log · tunnel.log
-└── run/       app.pid · aimlessd.pid · tunnel.pid
-```
+## First run
 
-Three things live outside the root, all of them things the desktop spec pins elsewhere:
+Two steps, in the window:
 
-| What | Where | Why |
-|---|---|---|
-| Login autostart entry | `~/.config/autostart/aimless-tray.desktop` | the desktop spec pins it there |
-| App icon | `~/.local/share/icons/hicolor/*/apps/aimless*.png` | has to sit in the icon theme for the taskbar and shell to find it |
-| Desktop entry | `~/.local/share/applications/aimless.desktop` | without it the taskbar cannot match the window to the app |
+1. **Your identity.** There is none on this machine yet: create one (a passphrase that protects your keys, plus a screen name), or restore a backup you exported earlier.
+2. **Your peers.** AIMless reaches the network through public peers. The built-in ones are nearby and checked, so you can keep them; the step also links to the current public list if you want to add one of your own. Skipping it is fine - the built-in list is already in place.
 
-The last one matters more than it looks: with no desktop entry the taskbar shows a generic placeholder instead of the app icon, and right-clicking the entry offers no application menu - because there is no application for the shell to build one from. The entry carries `Icon=aimless` and `StartupWMClass=aimless`, which has to match the `WM_CLASS` the window advertises.
+After that it is unlock, tray and window. `./aimless.pyz autostart` starts the whole stack at login.
 
-The icon is the AIM *running man* - yellow on a blue tile - drawn with Cairo at startup (the repo carries no binary assets) and written to the icon theme. It is only rewritten when it changes. Every window the app opens carries it, including the unlock dialog that is on screen before you type your passphrase.
+The app that starts at login is **locked** - it does not ask for your passphrase before you click the tray icon. It still tells you when a message arrives (badge, tooltip, notification); it just cannot read it until you unlock.
 
-> **Upgrading from an older version?** This release changed the on-disk layout; old files are not migrated. To keep your identity, **export a backup first** (Keys & Identity → *Export encrypted backup*) or copy `identity.json`/`node.key`/`client-contacts.json` by hand, then use **Import backup…** on the first-run screen. Message history and attachments are not preserved by the backup.
+## What the tray is telling you
 
-## Peers
+| Icon | Meaning |
+|---|---|
+| yellow running man | attached - your buddies see you as available |
+| yellow + red badge | attached, and something is unread (or waiting, if the app is still locked) |
+| **amber running man** | **at risk** - one peer is left, so that one link is the only way in and out |
+| **red running man** | **not attached** - the daemon is not hearing us, or no peer is up. Your buddies see you as offline |
+| red + red badge | not attached *and* something is unread |
 
-`aimlessd` is an embedded [Yggdrasil](https://yggdrasil-network.github.io/) node, so it needs **peers** to reach anyone else. Out of the box it dials a small set of public ones - five nearby nodes, from five different operators, each pinned to its public key.
-
-The status bar shows how many peers are up and how far the fastest one is. **Options → Peers …** opens the peer manager: every peer with its live state (up or down, round trip time, traffic, and the reason if one could not be used), a Remove button each, a field to add one, a **Restore the built-in peers** button, and a link to the public peer list.
-
-While no peer answers, the bar reads *"connecting - no Yggdrasil peers yet"* - and the tray turns red, because a node with no peers cannot be reached by anybody. If you emptied the list by accident, **Restore the built-in peers** puts it back.
-
-### When the tray warns
+The tooltip says why, the right-click menu shows the same state as a *Status:* line, and a notification fires when you go offline and again when you come back.
 
 The node is on the network as long as **one** peer is up, so the count alone is not the interesting number - the redundancy is:
 
 | Peers up | What the tray shows | Why |
 |---|---|---|
-| all of them | yellow running man | nothing to say |
-| some, but at least two | yellow running man | still more than one way in and out; losing a few peers is not worth a warning |
-| **exactly one** | **amber running man** | that link is the only way through - one failure away from being cut off |
-| none | **red running man** | the node is an island; nobody can reach you |
+| all of them | yellow | nothing to say |
+| two or more | yellow | still more than one way in and out, so losing a few peers is not worth a warning |
+| **exactly one** | **amber** | that link is the only way through - one failure from being cut off |
+| none | **red** | the node is an island; nobody can reach you |
 
 A daemon that was deliberately configured with a single peer is not warned about: it has all the redundancy it asked for.
 
-### Where to set them
+Two different things can break, and both end up on the red icon with a different reason:
+
+| What broke | How we notice | The reason it shows |
+|---|---|---|
+| the app cannot reach the daemon | our heartbeat stops landing | *the daemon is not answering* |
+| the daemon died | the supervisor notices and restarts it | *the daemon died - restarting* |
+| the ssh tunnel is down (remote mode) | the tunnel process is gone | *the ssh tunnel is down* |
+| the daemon is alive but has **no peer up** | the daemon's peer list | *no Yggdrasil peers - the daemon is on an island* |
+
+The last one is the subtle one: the daemon answers, the app is happy, the window looks fine - and the node still cannot reach the overlay network, so nobody can reach you.
+
+## Peers
+
+`aimlessd` is an embedded Yggdrasil node, so it needs **peers** to reach anyone else. Out of the box it dials five of them, from five different operators, each pinned to its public key:
+
+```
+tls://ca.us.ygg.informatics.coop:443?key=0000000023fc6ffb62afb79448aefb0943df2e4472cf08bd489f5407378300a2
+tcp://ip4.nerdvm.mywire.org:8080?key=00000000c61d731961a290d127cd3fc03a4c5f3f35b9083559d4c81d48d65854
+tls://ygg8.mk16.de:1338?key=0000000b0683e38d8cb3085cfbf217edf0f0b2de76bb5ac7f02a94cd42a3fed9
+tcp://no0.yggdrasil.netralex.com:65533?key=f4b9fe4f9923834b1c20f84e13b14d90ecde443f78613ec54cf484eea6880fea
+tls://nl1.route172.de:443?key=000000002643ae27bad63e2a81f1d30554ce9ea634f5990062a9e079e23593cd
+```
+
+**Public peers rot.** Operators go away, and a domain that lapses gets parked - the hostname resolves to `0.0.0.0`, which connects to localhost and is refused instantly. That is not a hypothetical: it is how this daemon once ended up with no peers at all. So:
+
+- a peer whose hostname does not resolve is **refused at startup** and shown as broken, instead of being dialled forever;
+- the live list, refreshed hourly, is at <https://publicpeers.neilalexander.dev/> - and the peer manager has a **Browse the public peer list** button, so you do not have to go looking for the URL;
+- the machine-readable version of the same list is at <https://github.com/Yggdrasil-Unofficial/pubpeers> (`peers.json`).
+
+**Options -> Peers ...** opens the peer manager: every peer with its live state (up or down, round trip time, traffic, and the reason if one could not be used), a Remove button each, a field to add one, and a **Restore the built-in peers** button. Changes are applied immediately - no restart - and the daemon writes them to its own `config.json`, so the file and the running daemon never disagree.
 
 | Where | How | Notes |
 |---|---|---|
-| **The app** | **Options → Peers …** | Add or remove one, see how each is doing. Writes `config.json` and applies the change right away - no restart. |
+| **The app** | **Options -> Peers ...** | The easy way. Applies right away. |
 | `daemon/config.json` | `"peers": [...]` | The same file the app writes. |
-| `aimlessd -peers` | `-peers uri1,uri2` | Overrides the config file entirely (it replaces, never merges). `-peers none` runs with no peers at all. |
-| Built-in | `defaultPeers` in `daemon/main.go` | Used when neither of the above is set. |
-
-`config.json` also takes `"listen": [...]` for inbound links, with `-listen` as the flag equivalent. Every peer URI scheme and option, all daemon flags, and troubleshooting notes are in **[docs/networking.md](docs/networking.md)**.
-
-### Using your own peers
-
-Public peers go offline, and when their domain lapses the DNS record is parked - the hostname resolves to `0.0.0.0`, which connects to localhost and is refused instantly. The live list, refreshed hourly, is at <https://publicpeers.neilalexander.dev/>; take a few nearby ones with good uptime. The peer manager has a **Browse the public peer list** button, so you do not have to go looking for the URL.
-
-Add them in the app (**Options → Peers …**), or write them yourself:
-
-```json
-{
-  "peers": [
-    "tls://ca.us.ygg.informatics.coop:443?key=0000000023fc6ffb62afb79448aefb0943df2e4472cf08bd489f5407378300a2",
-    "tcp://ip4.nerdvm.mywire.org:8080?key=00000000c61d731961a290d127cd3fc03a4c5f3f35b9083559d4c81d48d65854"
-  ]
-}
-```
+| `aimlessd -peers` | `-peers uri1,uri2` | Overrides the file entirely (replaces, never merges). `-peers none` runs with no peers at all. |
+| built-in | `defaultPeers` in `daemon/main.go` | Used when neither of the above is set. |
 
 The `?key=` option pins the peer's public key: the peer has to present exactly that key, so an IP that gets reassigned cannot pass itself off as the node you meant to reach. Keep the list short - every extra peer is another node you relay traffic for.
 
 > Routing to another AIMless node takes a moment the first time - Yggdrasil refreshes its routing table every few minutes, so a message to a never-before-seen peer can take a minute or two to find its way. Queued messages retry on their own, so nothing is lost while the route is being worked out.
 
-## Using it
+**Running your own peer** is the only way to be sure of being reachable. A $4 VPS running `aimlessd -listen tcp://0.0.0.0:1234` is enough; put it in the peer list and you no longer depend on anybody else's uptime.
 
-The tray owns the daemon: closing the window just hides it (tray click reopens; tray *Quit* shuts everything down).
+## Where things live
 
-### Preferences
-Header menu → **Preferences …** (stored as `client/prefs.json` under the data root, below):
+Everything lives under one root - `~/.local/share/aimless` by default, or `$AIMLESS_HOME`. `aimless paths` prints the resolved locations.
 
-- **Remember window position and size** (off-screen-safe; best-effort on Wayland) with a *Reset* button.
-- **Desktop notifications** (libnotify / `notify-send`) and **notification sound** - Off, single, double, triple, or long synthesised beep (no audio files, with a *Test* button; `AIMLESS_SOUND` overrides).
-- **Enter to send**, **24h/12h timestamps**.
-- **Theme** - System (follows desktop light/dark live), Aimless Dark, Mocha, Nord, Tokyo Night, Latte, Dawn, plus **Matrix** and **Amber CRT** (monospace). `AIMLESS_THEME` overrides.
+```
+~/.local/share/aimless/
+├── client/    identity.json - contacts.json - state.db - prefs.json - attachments/
+├── daemon/    node.key - config.json - aimless.db - contacts.json - blocked.json - lock - api.sock
+├── logs/      app.log - daemon.log - tunnel.log
+└── run/       app.pid - aimlessd.pid - tunnel.pid
+```
 
-The window title and the tray tooltip show the total unread, and the tray icon itself gets a red badge while anything is unread - so a new message is visible without hovering. Sent text shows a delivered tick; files show per-recipient progress (`1/3 delivered` → `Delivered ✓`).
+Three things live outside the root, because the desktop spec pins them there:
 
-### The tray says whether you are actually online
-
-The daemon keeps running on its own and only advertises you as *present* while a client is attached to it. When no client is attached, your buddies see **"client offline - messages will be delivered"** - the messages still arrive, but you are not reachable in real time. That state is easy to miss, so the tray says it out loud:
-
-| Tray icon | Meaning |
-|---|---|
-| yellow running man | attached - your buddies see you as available |
-| yellow running man + red badge | attached, and something is unread (or waiting, if the app is still locked) |
-| **amber running man** | **at risk** - only one peer is left, so that one link is the only way in and out. One failure away from being cut off |
-| amber running man + red badge | at risk *and* something is unread |
-| **red running man** | **not attached** - the daemon is not hearing us, or no peer is up; your buddies see you as offline |
-| red running man + red badge | not attached *and* something is unread |
-
-The tooltip says why, the right-click menu shows the same state as a *Status:* line, and a desktop notification fires when you go offline and again when you come back. Going offline is detected from our own traffic to the daemon: if the daemon stops answering for 15 seconds the icon turns red, which is before the daemon itself drops us to "client offline" after 30.
-
-Two different things can break, and both end up on the same red icon with a different reason:
-
-| What broke | How we notice | The reason it shows |
+| What | Where | Why |
 |---|---|---|
-| The app cannot reach the daemon | our heartbeat stops landing | *the daemon is not answering* |
-| The daemon died | the supervisor notices and restarts it | *the daemon died - restarting* |
-| The ssh tunnel is down (remote mode) | the tunnel process is gone | *the ssh tunnel is down* |
-| The tunnel is up but the remote daemon is not | our heartbeat stops landing | *the daemon is not answering* |
-| The daemon is alive but has **no Yggdrasil peer up** | the daemon's peer list | *no Yggdrasil peers - the daemon is on an island* |
+| Login autostart entry | `~/.config/autostart/aimless-tray.desktop` | the desktop spec pins it there |
+| App icon | `~/.local/share/icons/hicolor/*/apps/aimless*.png` | it has to sit in the icon theme for the taskbar and shell to find it |
+| Desktop entry | `~/.local/share/applications/aimless.desktop` | without it the taskbar cannot match the window to the app |
 
-The last one is the subtle one: the daemon answers, the app is happy, the window looks fine - and the node still cannot reach the overlay network, so nobody can reach you. A daemon with peers configured and none of them up is an island; a daemon started with `-peers none` has no peers *by choice* and is left alone.
+That last one matters more than it looks: with no desktop entry the taskbar shows a generic placeholder instead of the app icon, and right-clicking it offers no application menu - because there is no application for the shell to build one from. The entry carries `Icon=aimless` and `StartupWMClass=aimless`, which have to match the `WM_CLASS` the window advertises.
 
-### Messages waiting before you unlock
+The icon is the AIM *running man* - yellow on a blue tile - drawn with Cairo at startup (the repo carries no binary assets) and written into the icon theme. It is only rewritten when it changes. Every window the app opens carries it, including the unlock dialog that is on screen before you type your passphrase.
 
-At login the app starts in the tray **locked** - no passphrase has been typed yet, so it cannot decrypt anything. It still knows that something arrived, because the daemon journals every message it receives:
+> **Upgrading from an older version?** The on-disk layout changed once; old files are not migrated. To keep your identity, **export a backup first** (Keys & Identity -> *Export encrypted backup*) or copy `identity.json` and `node.key` by hand, then use **Import backup...** on the first-run screen. Message history and attachments are not preserved by the backup.
 
-- the tray icon gets the red badge as soon as a message lands,
-- the tooltip says **"N new message(s) waiting"** and the right-click menu says **"Status: locked - N message(s) waiting"**,
-- a desktop notification says the same.
+## Keys, identity and the CLI
 
-Nothing is consumed by looking: the count is what the daemon journaled past our own watermark, and the watermark stays where it is, so unlocking still shows the message as unread.
+Header menu -> **Keys & Identity ...**
 
-The counting needs no passphrase: the buddy keys in `client/contacts.json` and the per-peer watermark in `client/state.db` are routing metadata and are stored in the clear. Only the message *contents* are encrypted, and those need the passphrase.
-
-Unlock and the wording changes to the normal **"N unread"** - the same count, the same messages. From then on the app keeps the badge up to date on its own, and closing the window (which only hides it) does not stop it.
-
-In remote (ssh) mode the app talks to the remote daemon through the tunnel's local socket, so the same checks apply to the remote host - the tunnel dropping and the remote daemon losing its peers are both caught. While the tunnel is still coming up the app is *connecting*, not offline, and says so instead of raising a false alarm.
-
-On startup the app also tells you how long you were away - that gap is exactly the window in which your buddies saw you as offline, because the daemon was running without a client attached.
-
-### Keys & identity
-Header menu → **Keys & Identity …**:
-
-- **Yggdrasil node key** - view your address and set a specific key (paste 64/128-hex from a vanity generator), generate a random one, or reset to default. The address is previewed; applying restarts the daemon. Changing it changes your address, so old invites go stale.
-- **Client identity** - replace your encryption key from a 64-hex seed. This breaks existing conversations; restart aimless afterwards.
+- **Yggdrasil node key** - see your address, or set a specific one (paste 64/128-hex from a vanity generator), generate a random one, or reset to default. The address is previewed; applying restarts the daemon. Changing it changes your address, so old invites go stale.
+- **Client identity** - replace your encryption key from a 64-hex seed. This breaks existing conversations; restart AIMless afterwards.
 - **Backup & restore** - one passphrase-encrypted bundle (identity seed, node key, screen name, contacts). Restoring overwrites your keys.
 
-Keys are written `0600` and atomically; seeds are never logged.
+Keys are written `0600` and atomically, and seeds are never logged.
 
-### CLI
-`aimless init`, `invite`, `add <invite> [petname]`, `list`, `send`, `chat`, `away`, `gui`, `tray`, `paths`, `stop` - see `aimless --help`.
+The CLI does the same things without a window: `aimless init`, `invite`, `add <invite> [petname]`, `list`, `send`, `chat`, `away`, `gui`, `tray`, `paths`, `stop` - see `aimless --help`.
 
 ## Always-on daemon (optional)
 
-By default the client owns a local daemon; if your machine is off, a message sent to you waits on the sender until you're back. To never miss one, run the daemon on an always-on host (small server, Pi, VPS) and let the client reach it over SSH.
+By default the client owns a local daemon: if your machine is off, a message sent to you waits on the sender until you are back. To never miss one, run the daemon on an always-on host (a small server, a Pi, a VPS) and let the client reach it over SSH.
 
-1. On the always-on host, run the daemon-only container (see `deploy/docker/README.md`), seeding your existing `node.key` so your address is unchanged.
-2. On the client, add a `remote` block to `client/prefs.json` (`aimless paths` shows where it lives):
+1. On the always-on host, run the daemon-only container (see `deploy/docker/README.md`), seeding your existing `node.key` so your address does not change.
+2. On the client, add a `remote` block to `client/prefs.json` (`aimless paths` shows where that is):
    ```json
    "remote": {
      "host": "user@always-on-host",
      "socket": "/abs/path/aimless-data/daemon/api.sock"
    }
    ```
-   Your SSH key must be authorized on the host. The client opens the tunnel itself; you don't run ssh by hand.
-3. Start aimless as usual. The bottom bar shows the tunnel host (and your node id); the tunnel is monitored and restarted automatically if it drops (e.g. after the laptop wakes).
+   Your SSH key has to be authorized on the host. The client opens the tunnel itself - you do not run ssh by hand.
+3. Start AIMless as usual. The bar shows the tunnel host; the tunnel is monitored and restarted automatically if it drops (after the laptop wakes, for instance).
 
-The daemon holds ciphertext and the node key only - your identity stays on the client. **One client per daemon.**
-
-A daemon-only host has no client attached by design, so from the buddies' side that node shows as *client offline - messages will be delivered* until a client connects over the tunnel. The client-side tray turns red for the same reason when the tunnel drops.
-
-While your client is closed, buddies still see your daemon reachable and messages are delivered and queued for you; once the daemon stops hearing from a client it advertises *"client offline - messages will be delivered"* (within seconds), so nobody waits on a reply. It clears automatically when you reopen aimless.
+The daemon holds ciphertext and the node key only - your identity stays on the client. **One client per daemon.** A daemon-only host has no client attached by design, so from the buddies' side that node shows as *client offline - messages will be delivered* until a client connects over the tunnel.
 
 ---
 
 ## How it works
 
 ```
-┌──────────┐  unix socket   ┌─────────┐   encrypted packets   ┌─────────┐  unix socket  ┌──────────┐
-│  client  │ ─────────────▶ │ aimlessd│ ────────────────────▶ │ aimlessd│ ────────────▶ │  client  │
-│ (Python) │   NDJSON       │  (Go)   │   Yggdrasil overlay   │  (Go)   │   NDJSON      │ (Python) │
-└──────────┘                └─────────┘                       └─────────┘               └──────────┘
-   plaintext                  ciphertext                        ciphertext                plaintext
-   in RAM only                journals on disk                  journals on disk          in RAM only
++-----------+  unix socket  +-----------+   encrypted packets  +-----------+  unix socket  +-----------+
+|  client   | ------------> |  aimlessd | --------------------> |  aimlessd | ------------> |  client   |
+| (Python)  |    NDJSON     |   (Go)    |  Yggdrasil overlay   |   (Go)    |    NDJSON     | (Python)  |
++-----------+              +-----------+                       +-----------+              +-----------+
+   plaintext                ciphertext                     ciphertext              plaintext
+   in RAM only              journals on disk               journals on disk        in RAM only
 ```
 
-The **client** owns identity, encryption, and display. The **daemon** is a dumb, durable relay: it journals ciphertext, retries until ACKed, stores file chunks, and probes presence - it **never sees plaintext**. Transport is an embedded (no TUN) Yggdrasil node; each peer is addressed by its node key.
+The **client** owns identity, encryption and display. The **daemon** is a dumb, durable relay: it journals ciphertext, retries until ACKed, stores file chunks and probes presence - it **never sees plaintext**. The transport is an embedded (no TUN) Yggdrasil node, and every peer is addressed by its node key.
 
 | Piece | Language | Role |
 |---|---|---|
@@ -263,55 +221,59 @@ The **client** owns identity, encryption, and display. The **daemon** is a dumb,
 | `client/` | Python | identity, contacts, encrypted SQLite state, GTK app (rooms, files, themes, prefs) + CLI |
 | `deploy/` | - | webtop image, `package.sh` release builder, `check_dist.py` gate, two-node smoke test |
 
-## Security model
+### Security model
 
-- **Identity** = a client Ed25519 keypair. Your invite (`aimless1:<client-pk>:<node-pk>:<screen>`) carries the client key (what friends encrypt to) and the node key (where to route). The Yggdrasil address is derived from the node key.
-- **E2E encryption** - per-recipient NaCl sealed boxes made by the client; every message is Ed25519-signed, verified against the claimed sender independently of the transport.
-- **The daemon can't read messages, names, filenames, or status.** It sees only routing metadata (above).
+- **Identity** is a client Ed25519 keypair. Your invite (`aimless1:<client-pk>:<node-pk>:<screen>`) carries the client key (what friends encrypt to) and the node key (where to route). The Yggdrasil address is derived from the node key.
+- **E2E encryption** - per-recipient NaCl sealed boxes made by the client. Every message is Ed25519-signed and verified against the claimed sender, independently of the transport.
+- **The daemon cannot read messages, names, filenames or status.** It sees routing metadata only.
 - **No forward secrecy** - long-term keys, no ratchet. Anyone with your private key can decrypt past traffic; treat it like email, not Signal.
-- **Encrypted at rest** - history is an encrypted SQLite DB (`state.db`, scrypt key); the identity file likewise. The **one exception is attachment bytes**, written to `client/attachments/<conv>/` (under the data root) in plaintext so images can render/save locally.
-- Experimental alpha - don't use for security-critical purposes.
+- **Encrypted at rest** - history is an encrypted SQLite database (`state.db`, scrypt key), and so is the identity file. The **one exception is attachment bytes**, written to `client/attachments/<conv>/` in plaintext so images can render and save locally.
+- Experimental alpha - not for security-critical use.
 
-## Under the hood
+### Under the hood
 
-**Packet format.** Each datagram is an envelope over ironwood's encrypted `PacketConn`: a 20-byte header (`version=1`, `type`, `seq` uint64, `ts` ms, `payload_len`) plus payload. Types: `MSG`, `ACK`, `STATUS`, `PROBE`, `FILE`.
+Each datagram is an envelope over ironwood's encrypted `PacketConn`: a 20-byte header (`version=1`, `type`, `seq` uint64, `ts` ms, `payload_len`) plus the payload. Types: `MSG`, `ACK`, `STATUS`, `PROBE`, `FILE`.
 
-- **MSG** - sealed box from the sender's client. ACKed; the sender retries until then.
-- **STATUS** - sealed screen/away blob. The daemon only sends the client's real status while a client has been active recently (a heartbeat); with no client attached it sends an **empty STATUS** as a "mailbox" marker, so buddies show *"client offline - messages will be delivered"* instead of available. Delivery does not depend on this.
+- **MSG** - a sealed box from the sender's client. ACKed; the sender retries until then.
+- **STATUS** - a sealed screen/away blob. The daemon only sends the client's real status while a client has been active recently (a heartbeat); with no client attached it sends an **empty STATUS** as a "mailbox" marker, so buddies see *"client offline - messages will be delivered"* instead of available. On the receiving side an away buddy is **amber**, not green: reachable is not the same as at the keyboard.
+- **PROBE** - a presence ping. Liveness comes from probe/status only, never from message traffic, so a clientless always-on daemon can age out of buddies' presence while it still relays and ACKs.
+- **FILE** - a 20-byte cleartext routing header (transfer id, chunk index and total) plus a sealed chunk body. The daemon keys and joins the chunks, but the filename, MIME type, hash and contents stay encrypted. Chunks persist until the client reassembles and verifies them (SHA-256), and consumption is ACKed.
 
-  The daemon re-sends the state on every tick: a packet sent before the route to the peer is up is simply lost, and a state that is only announced once may never arrive. And on the receiving side an away buddy is **amber**, not green - being reachable is not the same as being at the keyboard.
+Inside a MSG payload: `{"v":1,"kind":"msg","from":<hex>,"body":<canonical JSON>,"sig":<b64>}`, where `body` is `{"text","ts"}` plus an optional `screen`, and for rooms `conv` (SHA-256 of the sorted member node keys) and `members`. `sig` is Ed25519 over `aimless\x01 + body`.
 
-  The same states are used everywhere: the sidebar, the contacts list, the room rows and `aimless list` all say the same thing about the same buddy, in the same colours.
-- **PROBE** - presence ping. Liveness comes from probe/status only (not from message/ACK traffic), so a clientless always-on daemon can age out of buddies' presence even while it relays and ACKs messages.
-- **FILE** - 20-byte cleartext routing header (transfer id + chunk index/total) + sealed chunk body. The daemon keys/joins chunks, but filename, MIME, hash, and contents stay encrypted. Chunks persist until the client reassembles and verifies (SHA-256), ACKs consumption.
+**Rooms** are three or more members, fanned out client-side (one sealed copy per member, with the normal retry and ACK). Membership is learned from signed messages, so nobody can impersonate anybody. History is one sync stream per peer, routed by `conv` with a single watermark; clearing or deleting a room dismisses the backlog, and muting keeps the history but stays silent.
 
-**Messages.** Inside a MSG payload: `{"v":1,"kind":"msg","from":<hex>,"body":<canonical JSON>,"sig":<b64>}`, where `body` is `{"text","ts"}` plus optional `screen`, and for rooms `conv` (SHA-256 of sorted member node keys) and `members`. `sig` is Ed25519 over `aimless\x01 + body`.
-
-**Rooms** are 3+ members via client-side fan-out (one sealed copy per member, normal retry/ACK). Membership is learned from signed messages, so nobody can impersonate anyone. History is one per-peer sync stream routed by `conv` with a single watermark; clearing/deleting dismisses the backlog; mute keeps history but stays silent.
-
-**What the daemon knows vs. can't:**
-
-| Type | Knows | Can't know |
+| Type | The daemon knows | The daemon cannot know |
 |---|---|---|
 | MSG | destination, seq, timestamp, size | text, screen name |
-| FILE | transfer id, chunk index/total, size | filename, MIME, hash, contents |
+| FILE | transfer id, chunk index/total, size | filename, MIME type, hash, contents |
 | STATUS/PROBE | source, timestamp | screen name, away message |
-**Local API** (Unix socket, newline-JSON; requests may carry an `id` echoed on the reply): `whoami`, `status`, `send`, `sendfile`, `history`, `watch`, `setstatus`, `presence`, `block`/`unblock`/`blocklist`, `pendingattachments`/`fetchattachment`/`ackfile`; events `recv` and `acked`.
+
+The local API is a Unix socket speaking newline-delimited JSON; requests may carry an `id` that is echoed on the reply. Ops: `whoami`, `status`, `send`, `sendfile`, `history`, `watch`, `setstatus`, `setpeers`, `presence`, `block`/`unblock`/`blocklist`, `pendingattachments`/`fetchattachment`/`ackfile`. Events: `recv` and `acked`.
+
+More detail lives in **[docs/networking.md](docs/networking.md)** (peers, listeners, the mesh) and **[docs/always-on-daemon.md](docs/always-on-daemon.md)** (running the daemon on a host that never sleeps).
+
+## Building from source
+
+```sh
+cd daemon && go build -o aimlessd . && ./aimlessd -datadir ~/.local/share/aimless/daemon
+cd ../client && pip install . && aimless
+```
 
 ## Development
 
 ```sh
-cd daemon && go test ./...      # codec, journals, delivery, presence, integration
-cd client && pytest tests/      # crypto, protocol, store, real-daemon e2e, GTK
-cd deploy && python3 smoke.py   # two-node deployment incl. offline delivery
-./deploy/package.sh             # build versioned dist/ artifacts
-python3 deploy/check_dist.py    # release gate: committed dist matches source
+cd daemon && go test ./...       # codec, journals, delivery, presence, integration
+cd client && pytest tests/       # crypto, protocol, store, real-daemon e2e, GTK
+cd deploy && python3 smoke.py    # two-node deployment, including offline delivery
+./deploy/package.sh              # build the versioned dist/ artifacts
+python3 deploy/check_dist.py     # release gate: the committed dist matches the source
 ```
 
 ## Status
 
-Experimental. Both Yggdrasil and aimless are alpha - not for security-critical use.
+Experimental. Both Yggdrasil and AIMless are alpha - not for security-critical use.
 
 ---
 
-*Developed with heavy AI assistance: most of the code, packaging, and this README are produced collaboratively with large language models. Review carefully and audit what you run; releases and images are human-reviewed and tested before publishing.*
+*Developed with heavy AI assistance: most of the code, the packaging and this README are produced collaboratively with large language models. Review carefully and audit what you run; releases and images are human-reviewed and tested before publishing.*
