@@ -499,6 +499,7 @@ DEFAULT_PREFS = {
     "time_format": "24h",
     "theme": "system",           # used by the 0.8.3 theming work
     "seen_onboarding": False,
+    "sidebar_order": "recent",   # "recent" (newest first) or "alpha" (by name)
 }
 
 
@@ -1302,6 +1303,11 @@ class MessagesView(Gtk.Box):
         self._bubble_status = {}   # outgoing message id -> status Gtk.Label
         self._last_msg_date = None
         self._at_bottom = True
+        # The order the list is in, so the open conversation can be kept in
+        # place instead of jumping to the top when it gets a message.
+        self._order = []
+        # Where each conversation sits in that order - the list sorts by it.
+        self._sort_rank = {}
 
         paned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
 
@@ -1309,13 +1315,31 @@ class MessagesView(Gtk.Box):
         sidebar.get_style_context().add_class("aimless-sidebar")
         sidebar.set_size_request(240, -1)
 
+        header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
         hint = Gtk.Label(label="Buddies")
         hint.set_xalign(0.0)
         hint.set_margin_start(10)
         hint.set_margin_top(8)
         hint.set_margin_bottom(4)
         hint.get_style_context().add_class("muted")
-        sidebar.pack_start(hint, False, False, 0)
+        header.pack_start(hint, True, True, 0)
+        # The order of the list: recent activity, or by name.
+        self.order_btn = Gtk.Button()
+        self.order_btn.set_relief(Gtk.ReliefStyle.NONE)
+        self.order_btn.set_always_show_image(True)
+        self.order_btn.set_margin_end(8)
+        self.order_btn.set_margin_top(4)
+        self.order_btn.connect("clicked", self.on_toggle_order)
+        header.pack_start(self.order_btn, False, False, 0)
+        sidebar.pack_start(header, False, False, 0)
+
+        # Filter: narrows the list as you type.
+        self.filter_entry = Gtk.Entry(placeholder_text="Filter buddies\u2026")
+        self.filter_entry.set_margin_start(6)
+        self.filter_entry.set_margin_end(6)
+        self.filter_entry.set_margin_bottom(4)
+        self.filter_entry.connect("changed", self.on_filter_changed)
+        sidebar.pack_start(self.filter_entry, False, False, 0)
 
         new_room_btn = Gtk.Button()
         new_room_btn.set_relief(Gtk.ReliefStyle.NONE)
@@ -1348,6 +1372,16 @@ class MessagesView(Gtk.Box):
         self.sidebar_empty.get_style_context().add_class("muted")
         self.sidebar_empty.set_no_show_all(True)
         sidebar.pack_start(self.sidebar_empty, False, False, 0)
+
+        # Shown when the filter hides everything: an empty list should say why.
+        self.sidebar_no_match = Gtk.Label(label="Nothing matches that.")
+        self.sidebar_no_match.set_xalign(0.0)
+        self.sidebar_no_match.set_margin_start(10)
+        self.sidebar_no_match.set_margin_end(10)
+        self.sidebar_no_match.set_margin_top(8)
+        self.sidebar_no_match.get_style_context().add_class("muted")
+        self.sidebar_no_match.set_no_show_all(True)
+        sidebar.pack_start(self.sidebar_no_match, False, False, 0)
 
         paned.pack1(sidebar, False, False)
         paned.set_position(240)
@@ -1473,6 +1507,7 @@ class MessagesView(Gtk.Box):
     def sync_sidebar(self):
         session = self.app.session
         contacts = session.contacts()
+        activity = session.cache.last_activity()
         contact_nodes = {info["node"] for info in contacts.values()}
         for key in list(self.threads):
             thread = self.threads[key]
@@ -1522,6 +1557,9 @@ class MessagesView(Gtk.Box):
             row = self.selected.get("row")
             if row:
                 self.thread_list.select_row(row)
+        self._apply_order(activity)
+        self._update_order_button()
+        self.on_filter_changed(self.filter_entry)
         if self.threads:
             self.sidebar_empty.hide()
         else:
@@ -1593,6 +1631,93 @@ class MessagesView(Gtk.Box):
             self.conversation_header.set_markup(_room_header_markup(sel, self.app.session.self_node))
             self._render_member_chips(sel)
 
+    def _apply_order(self, activity=None):
+        """Put the conversations in order.
+
+        One list for DMs and rooms - a group chat is a conversation, not a
+        footnote under the buddy list. Two orders:
+
+        * **recent** - the newest conversation first, unread ones on top, and
+          conversations that have never had a message keep a stable spot at
+          the bottom instead of churning;
+        * **alpha** - by name, the way a phone book is.
+
+        The open conversation keeps its place: a new message in it should not
+        move the row out from under you. By name the place is the name, so
+        only the recent order pins it.
+        """
+        if activity is None:
+            activity = self.app.session.cache.last_activity()
+        by_name = pref(self.app.prefs, "sidebar_order") == "alpha"
+
+        def key(conv):
+            thread = self.threads[conv]
+            name = (thread.get("screen") or "").lower()
+            if by_name:
+                return (name, conv)
+            ts = activity.get(conv, 0)
+            unread = 0 if thread.get("unread") else 1
+            return (unread, -ts, name, conv)
+
+        order = sorted(self.threads, key=key)
+        selected = self.selected.get("conv") if self.selected else None
+        if not by_name and selected and selected in order and selected in self._order:
+            place = self._order.index(selected)
+            order.remove(selected)
+            order.insert(min(place, len(order)), selected)
+        self._order = list(order)
+        # The list is sorted by a rank, not by moving rows around: GTK3 has no
+        # reorder_child, and taking a row out of the list to put it back drops
+        # the selection - the open conversation would close under your hands.
+        self._sort_rank = {conv: index for index, conv in enumerate(order)}
+        self.thread_list.set_sort_func(self._compare_rows)
+
+    def _compare_rows(self, row_a, row_b, _user_data=None):
+        """Sort two sidebar rows by the rank `_apply_order` gave them."""
+        rank = self._sort_rank
+        first = rank.get(getattr(row_a, "aimless_conv", None), len(rank))
+        second = rank.get(getattr(row_b, "aimless_conv", None), len(rank))
+        return (first > second) - (first < second)
+
+    def on_toggle_order(self, _btn):
+        """Switch the list between recent activity and by name."""
+        order = "alpha" if pref(self.app.prefs, "sidebar_order") == "recent" else "recent"
+        self.app.prefs["sidebar_order"] = order
+        save_prefs(self.app.prefs)
+        self._update_order_button()
+        self._apply_order()
+
+    def _update_order_button(self):
+        by_name = pref(self.app.prefs, "sidebar_order") == "alpha"
+        icon = "view-sort-ascending-symbolic" if by_name else "view-sort-descending-symbolic"
+        self.order_btn.set_image(Gtk.Image.new_from_icon_name(icon, Gtk.IconSize.BUTTON))
+        self.order_btn.set_tooltip_text(
+            "Sorted by name - click for recent activity" if by_name
+            else "Sorted by recent activity - click for name")
+
+    def on_filter_changed(self, entry):
+        """Narrow the list as you type."""
+        needle = (entry.get_text() or "").strip().lower()
+        shown = 0
+        for conv, thread in self.threads.items():
+            row = thread.get("row")
+            if row is None:
+                continue
+            visible = not needle or needle in self._search_text(thread)
+            row.set_visible(visible)
+            if visible:
+                shown += 1
+        if needle and not shown:
+            self.sidebar_no_match.show()
+        else:
+            self.sidebar_no_match.hide()
+
+    @staticmethod
+    def _search_text(thread):
+        """What the filter box matches against: the visible name of the
+        conversation, and the buddy name behind it."""
+        return " ".join(filter(None, [thread.get("screen"), thread.get("petname")])).lower()
+
     def append_thread_row(self, node, thread):
         row = Gtk.ListBoxRow()
         box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
@@ -1629,6 +1754,11 @@ class MessagesView(Gtk.Box):
         row.add(box)
         self.thread_list.add(row)
         row.show_all()
+        row.aimless_conv = node
+        # A row added while the filter is active has to respect it.
+        needle = (self.filter_entry.get_text() or "").strip().lower()
+        if needle:
+            row.set_visible(needle in self._search_text(thread))
         thread["row"] = row
         thread["widgets"] = {"title": title, "subtitle": subtitle, "badge": badge}
 
@@ -2301,6 +2431,7 @@ class MessagesView(Gtk.Box):
                 self._append_outgoing(conv, seqs, ts, text)
                 self.selected["preview"] = text
                 self.update_thread_row(conv)
+                self._apply_order()
                 self._maybe_scroll()
         else:
             contact = thread["contact"]
@@ -2314,6 +2445,7 @@ class MessagesView(Gtk.Box):
                 self._append_outgoing(conv, {contact["node"]: resp.get("seq", 0)}, ts, text)
                 self.selected["preview"] = text
                 self.update_thread_row(conv)
+                self._apply_order()
                 self._maybe_scroll()
 
         def fail(e):
@@ -2527,7 +2659,7 @@ class MessagesView(Gtk.Box):
             session.cache.ensure_room(conv, {
                 m["node"]: {"node": m["node"], "pubkey": m["pubkey"],
                             "screen": m.get("screen", "")}
-                for m in roster.values()})
+                for m in roster.values()}, created=opened["ts"])
         thread = self.threads.get(conv)
         if thread is None:
             self.sync_sidebar()
@@ -2542,6 +2674,9 @@ class MessagesView(Gtk.Box):
             self._maybe_scroll()
         else:
             thread["unread"] += 1
+        # Sort once the unread count is known: the conversation that just got
+        # a message belongs on top.
+        self._apply_order()
         self.update_thread_row(conv)
         visible, muted, blocked = self._alert_state(conv, node)
         if should_notify(visible, muted, blocked, self.app.prefs):
@@ -2663,6 +2798,7 @@ class MessagesView(Gtk.Box):
                 self._maybe_scroll()
             else:
                 thread["unread"] += 1
+            self._apply_order()
             self.update_thread_row(conv)
         run_async(lambda: self.app.session.client.ack_attachment(node, chunk["transfer_id"]))
         if notify:

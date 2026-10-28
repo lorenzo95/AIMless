@@ -21,6 +21,7 @@ import json
 import os
 import sqlite3
 import threading
+import time
 import uuid
 
 import nacl.secret
@@ -38,7 +39,8 @@ CREATE TABLE IF NOT EXISTS conversations (
     dm         INTEGER NOT NULL DEFAULT 1,
     members    BLOB,                       -- encrypted roster JSON
     muted      INTEGER NOT NULL DEFAULT 0,
-    hidden     INTEGER NOT NULL DEFAULT 0
+    hidden     INTEGER NOT NULL DEFAULT 0,
+    created    INTEGER NOT NULL DEFAULT 0  -- when the conversation was opened
 );
 CREATE TABLE IF NOT EXISTS messages (
     id         TEXT PRIMARY KEY,           -- in:<sender>:<seq> | out:<deterministic>
@@ -99,6 +101,18 @@ class Store:
             self.conn.commit()
         except sqlite3.OperationalError:
             pass
+        try:
+            self.conn.execute(
+                "ALTER TABLE conversations ADD COLUMN created INTEGER NOT NULL DEFAULT 0")
+            # Conversations from before the column existed take their start
+            # time from their first message, so they do not all look new.
+            self.conn.execute(
+                "UPDATE conversations SET created = COALESCE("
+                "(SELECT MIN(ts) FROM messages WHERE messages.conv = conversations.id), created) "
+                "WHERE created = 0")
+            self.conn.commit()
+        except sqlite3.OperationalError:
+            pass
         salt = self._salt()
         self.box = nacl.secret.SecretBox(crypto.kdf_key(passphrase, salt))
 
@@ -140,12 +154,20 @@ class Store:
             self.conn.commit()
 
     # -- conversations -----------------------------------------------------
-    def _ensure_conv(self, conv: str, dm: bool) -> None:
-        self.conn.execute(
-            "INSERT OR IGNORE INTO conversations(id, dm, members, muted, hidden) VALUES(?, ?, ?, 0, 0)",
-            (conv, 1 if dm else 0, self._enc("{}")))
+    def _ensure_conv(self, conv: str, dm: bool, created: int = 0) -> None:
+        """Make sure the conversation row exists.
 
-    def ensure_room(self, conv: str, members: dict) -> None:
+        ``created`` is when the conversation started - for a direct message
+        that is the first message, not the moment it was filed: a message
+        that arrived today but was written last week should still look a week
+        old in the sidebar.
+        """
+        self.conn.execute(
+            "INSERT OR IGNORE INTO conversations(id, dm, members, muted, hidden, created) "
+            "VALUES(?, ?, ?, 0, 0, ?)",
+            (conv, 1 if dm else 0, self._enc("{}"), created or int(time.time() * 1000)))
+
+    def ensure_room(self, conv: str, members: dict, created: int = 0) -> None:
         """Create a room conversation.
 
         An existing roster is never overwritten. The roster decides who our
@@ -155,13 +177,35 @@ class Store:
         set into the conversation id (protocol.valid_room_members).
 
         A dismissed room is un-hidden again: a new message re-opens it.
+
+        ``created`` is when the room was opened. A room you just made has no
+        messages yet, and without a timestamp the sidebar would drop it at the
+        bottom of the list - a group chat you just created should come
+        first, not last.
         """
         with self._lock:
             self.conn.execute(
-                "INSERT INTO conversations(id, dm, members, hidden) VALUES(?, 0, ?, 0) "
+                "INSERT INTO conversations(id, dm, members, hidden, created) VALUES(?, 0, ?, 0, ?) "
                 "ON CONFLICT(id) DO UPDATE SET hidden=0",
-                (conv, self._enc(json.dumps(members))))
+                (conv, self._enc(json.dumps(members)),
+                 created or int(time.time() * 1000)))
             self.conn.commit()
+
+    def last_activity(self) -> dict:
+        """conv -> when the conversation was last touched.
+
+        The newest message in it, or when it was opened - whichever is
+        later. The sidebar orders the list by this, so a group you just
+        posted in sits at the top next to your DMs, and a group you just
+        made does not start life at the bottom of the list.
+        """
+        act = {conv: created for conv, created in self.conn.execute(
+            "SELECT id, created FROM conversations")}
+        for conv, ts in self.conn.execute(
+                "SELECT conv, MAX(ts) FROM messages GROUP BY conv"):
+            if ts > act.get(conv, 0):
+                act[conv] = ts
+        return act
 
     def rooms(self) -> list:
         return [r[0] for r in self.conn.execute(
@@ -201,7 +245,7 @@ class Store:
         """Route one decrypted inbound message. Idempotent by (sender, seq)."""
         mid = f"in:{sender}:{seq}"
         with self._lock:
-            self._ensure_conv(conv, dm=(conv == sender))
+            self._ensure_conv(conv, dm=(conv == sender), created=ts)
             cur = self.conn.execute(
                 "INSERT OR IGNORE INTO messages(id, conv, sender, dir, ts, seq, seqs, text, attachment) "
                 "VALUES(?, ?, ?, 'in', ?, ?, ?, ?, ?)",
@@ -226,7 +270,7 @@ class Store:
         else:
             keys = {(n, int(s)) for n, s in delivery_keys if int(s)}
         with self._lock:
-            self._ensure_conv(conv, dm=True)
+            self._ensure_conv(conv, dm=True, created=ts)
             cur = self.conn.execute(
                 "INSERT OR IGNORE INTO messages(id, conv, sender, dir, ts, seqs, text, attachment) "
                 "VALUES(?, ?, 'self', 'out', ?, ?, ?, ?)",

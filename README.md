@@ -78,6 +78,22 @@ After that it is unlock, tray and window. `./aimless.pyz autostart` starts the w
 
 The app that starts at login is **locked** - it does not ask for your passphrase before you click the tray icon. It still tells you when a message arrives (badge, tooltip, notification); it just cannot read it until you unlock.
 
+## The buddy list
+
+The list on the left is **one list**: your direct messages and your group chats, mixed the way conversations actually happen. A group you just made is a conversation, so it comes first - not at the bottom under everybody else.
+
+Two controls sit above it:
+
+- **A filter box.** Type and the list narrows as you type - one letter is enough. It matches the name you see and the buddy name behind it, so `ana` finds *Ana*. Clear it and everything is back.
+- **An order button**, the little arrow next to *Buddies*. Click it to switch order; it remembers which one you chose.
+
+| Order | What it does |
+|---|---|
+| **recent** (the default) | the conversation that happened last is on top, conversations with unread messages come first, the rest follow by time. A conversation that never had a message keeps a quiet spot at the bottom instead of churning |
+| **by name** | a phone book, A to Z |
+
+The conversation you are reading does not jump when a new message lands in it - the row stays where it is, so the text does not slide away under your eyes. Every other conversation moves when it should.
+
 ## What the tray is telling you
 
 | Icon | Meaning |
