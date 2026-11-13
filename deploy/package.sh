@@ -87,6 +87,9 @@ DAEMON_ART="aimlessd-linux-amd64"
 PYZ_ART="aimless.pyz"
 CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags "-s -w" -o "$OUT/$DAEMON_ART" "$ROOT/daemon" 2>/dev/null || \
   (cd "$ROOT/daemon" && CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags "-s -w" -o "$OUT/$DAEMON_ART" .)
+echo "building tailcat daemon …"
+TC_ART="aimlessd-tailcat-linux-amd64"
+(cd "$ROOT/daemon" && CGO_ENABLED=0 go build -tags tailcat -trimpath -buildvcs=false -ldflags "-s -w" -o "$OUT/$TC_ART" .)
 python3 - <<PYEOF
 import os, shutil, subprocess, sys, tempfile
 root = "$ROOT"
@@ -123,5 +126,5 @@ subprocess.run([sys.executable, "-m", "zipapp", stage, "-o", os.path.join(out, "
 shutil.rmtree(stage)
 print("zipapp built")
 PYEOF
-echo "release artifacts: $OUT/$DAEMON_ART $OUT/$PYZ_ART"
+echo "release artifacts: $OUT/$DAEMON_ART $OUT/$TC_ART $OUT/$PYZ_ART"
 echo "packaged: $OUT/aimless-dist.tar.gz"

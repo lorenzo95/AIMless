@@ -17,7 +17,7 @@ import (
 	"time"
 )
 
-const buildVersion = "aimlessd/0.9.11"
+const buildVersion = "aimlessd/0.9.22"
 
 // protocolVersion identifies the wire format spoken to other daemons. Peers on a
 // different version are ignored rather than misparsed; there is no compat layer.

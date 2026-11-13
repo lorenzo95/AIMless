@@ -25,3 +25,4 @@ daemon/cmd/tailcat-poc/tailcat-poc
 deploy/docker/dist/
 deploy/docker/daemon/
 deploy/docker/aimless-data/
+dist/aimlessd-tailcat-linux-amd64
