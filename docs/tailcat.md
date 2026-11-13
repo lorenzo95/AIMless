@@ -139,14 +139,25 @@ The `tailcat` build pulls in `tailscale.com` (gVisor netstack, wireguard-go,
 magicsock), so the tailcat binary is larger (~36 MB vs ~14 MB). The default
 Yggdrasil binary stays lean — the tailcat code is excluded by build tag.
 
+## Group rooms
+
+Rooms are client-side fan-out: one sealed copy per member. The roster carried in
+each room message includes each member's dial address (`addr`) alongside
+`node`/`pubkey`/`screen`, so a recipient can dial the other members over tailcat.
+The room id is still the hash of the member **node ids** (not addresses), so it
+stays stable. `send_room`/`send_file_room` register member addresses with the
+daemon before fanning out. Yggdrasil rosters carry an empty `addr` and are
+unaffected. Verified end-to-end over public DERP by
+`deploy/smoke_tailcat_room.py` (three nodes, bidirectional room delivery).
+
 ## Limitations / remaining work
 
 - No runtime transport toggle, no dual-homing, no per-contact delivery switching
   (that would require re-keying conversations/rooms on the client E2E key).
 - `setrelay` (runtime relay change) and config-file region/derpmap selection are
   not yet implemented; the region comes from the keyset or is injected in tests.
-- The GTK peer manager / tray redundancy UI still reflects Yggdrasil peers;
-  a relay-oriented rework is pending.
+- The GUI is transport-aware (relay panel, relay-based tray/status, v2 invite
+  add-buddy); `gtkui.py` is still a monolith and would benefit from extraction.
 - tailcat v0.7.0 makes no API/wire stability promises; the version is pinned.
 - Sender identity uses `Server.PeerEnv` (`TAILCAT_PEER_KEY`); v0.7.0 has no
   exported `PeerKey`. Allowlist removal for blocking is via connection close.

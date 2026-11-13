@@ -1285,10 +1285,10 @@ def _free_petname(contacts, base):
     return petname
 
 
-def _add_contact_from_roster(node, pubkey, screen):
+def _add_contact_from_roster(node, pubkey, screen, addr=""):
     contacts = protocol.load_contacts(contacts_path())
     petname = _free_petname(contacts, screen or node[:8])
-    contacts[petname] = {"pubkey": pubkey, "node": node, "screen": screen or node[:8]}
+    contacts[petname] = {"pubkey": pubkey, "node": node, "screen": screen or node[:8], "addr": addr}
     protocol.save_contacts(contacts_path(), contacts)
     return petname
 
@@ -1628,12 +1628,19 @@ class MessagesView(Gtk.Box):
 
     def create_room(self, chosen_infos):
         session = self.app.session
+        self_addr = ""
+        try:
+            a = session.client.whoami().get("address", "")
+            if a.startswith("tc"):
+                self_addr = a
+        except DaemonError:
+            pass
         members = {session.self_node: {"node": session.self_node,
                                        "pubkey": session.client.pubkey_hex,
-                                       "screen": session.self_screen}}
+                                       "screen": session.self_screen, "addr": self_addr}}
         for info in chosen_infos:
             members[info["node"]] = {"node": info["node"], "pubkey": info["pubkey"],
-                                     "screen": info.get("screen", "")}
+                                     "screen": info.get("screen", ""), "addr": info.get("addr", "")}
         conv = protocol.room_id(sorted(members.keys()))
         session.cache.ensure_room(conv, members)
         self.sync_sidebar()
@@ -2359,7 +2366,7 @@ class MessagesView(Gtk.Box):
         info = (self.selected or {}).get("members", {}).get(node)
         if not info:
             return
-        petname = _add_contact_from_roster(node, info.get("pubkey"), screen)
+        petname = _add_contact_from_roster(node, info.get("pubkey"), screen, info.get("addr", ""))
         self.app.session.cache.unmute(node)
         self.app.daemon_block_set(node, blocked=False)
         self.app.contacts.refresh()
@@ -3477,12 +3484,12 @@ class AimlessWindow(Gtk.Window):
         finally:
             self._request_open = False
         if choice == Gtk.ResponseType.ACCEPT:
-            petname = _add_contact_from_roster(req["node"], req["pubkey"], req.get("screen"))
+            petname = _add_contact_from_roster(req["node"], req["pubkey"], req.get("screen"), req.get("addr", ""))
             self.session.cache.unmute(req["node"])
             self.daemon_block_set(req["node"], blocked=False)
             conv = req.get("conv") or req["node"]
             members = {m["node"]: {"node": m["node"], "pubkey": m["pubkey"],
-                                   "screen": m.get("screen", "")}
+                                   "screen": m.get("screen", ""), "addr": m.get("addr", "")}
                        for m in (req.get("members") or [])}
             if members:
                 # The user accepted this request, so this roster is approved.

@@ -321,6 +321,11 @@ class Client:
         for m in members:
             if m["node"] == my_node:
                 continue
+            if m.get("addr"):
+                try:
+                    self.add_contact(m["node"], m["addr"])
+                except DaemonError:
+                    pass
             sealed = protocol.seal_file_chunk(self.identity, m["pubkey"], body)
             payload = base64.b64encode(header + sealed).decode()
             resp = self.daemon.request("sendfile", to=m["node"], payload=payload)
@@ -345,16 +350,23 @@ class Client:
         return self.daemon.request("ackfile", **{"from": node_hex}, tid=tid)
 
     def send_room(self, members: list, conv: str, text: str, ts: int) -> dict:
-        """members: full member set [{node, pubkey, screen}] including self; one sealed
+        """members: full member set [{node, pubkey, screen, addr?}] including self;
         copy is sent to every member except self. Returns {node: seq} per stream."""
         from . import protocol
-        triplets = [{"node": m["node"], "pubkey": m["pubkey"], "screen": m.get("screen", "")}
-                    for m in members]
+        triplets = [{"node": m["node"], "pubkey": m["pubkey"], "screen": m.get("screen", ""),
+                     "addr": m.get("addr", "")} for m in members]
         my_node = self.node_key()
         seqs = {}
         for m in triplets:
             if m["node"] == my_node:
                 continue
+            if m.get("addr"):
+                # Make sure the daemon can dial this member (tailcat) and watches
+                # it for presence. Idempotent; a no-op for Yggdrasil (addr empty).
+                try:
+                    self.add_contact(m["node"], m["addr"])
+                except DaemonError:
+                    pass
             payload = protocol.seal_message(self.identity, m["pubkey"], text, ts,
                                             screen=self.screen_name, conv=conv, members=triplets)
             resp = self.daemon.request("send", to=m["node"], payload=payload)
