@@ -924,6 +924,12 @@ def clear_children(container):
 
 
 def daemon_binary():
+    # Model A transport switch: point the supervisor at a specific daemon
+    # binary (e.g. aimlessd-tailcat) via AIMLESS_DAEMON_BIN. Use a separate
+    # AIMLESS_HOME per transport so keys/contacts/addresses stay distinct.
+    override = os.environ.get("AIMLESS_DAEMON_BIN")
+    if override:
+        return override
     names = ("aimlessd", "aimlessd-linux-amd64")
     dirs = [
         os.path.dirname(os.path.abspath(sys.argv[0])),
@@ -1156,7 +1162,7 @@ class Session:
 
     def my_invite(self):
         who = self.client.whoami()
-        return protocol.make_invite(self.identity, who["key"], self.self_screen)
+        return protocol.make_invite(self.identity, who["key"], self.self_screen, addr=who.get("address"))
 
     def refresh_node(self):
         """Re-read the daemon's node key after a restart (address may change)."""

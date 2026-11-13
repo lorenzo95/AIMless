@@ -14,6 +14,7 @@ from . import base58
 from . import crypto
 
 INVITE_PREFIX = "aimless1:"
+INVITE_PREFIX_V2 = "aimless2:"
 MAGIC = b"aimless\x01"
 
 FILE_CHUNK_SIZE = 32 * 1024
@@ -117,8 +118,13 @@ def load_contacts(path: str) -> dict:
         return json.load(f)
 
 
-def make_invite(identity: nacl.signing.SigningKey, node_pubkey_hex: str, screen_name: str) -> str:
+def make_invite(identity: nacl.signing.SigningKey, node_pubkey_hex: str, screen_name: str,
+                addr: str = None) -> str:
     client_key = base58.b58encode(bytes(identity.verify_key))
+    # A tailcat address (starts with "tc") means the v2 invite: the stable node
+    # pubkey plus the full dial address. Yggdrasil keeps the v1 form.
+    if addr and addr.startswith("tc"):
+        return f"{INVITE_PREFIX_V2}{client_key}:{node_pubkey_hex}:{addr}:{screen_name}"
     node_key = base58.b58encode(bytes.fromhex(node_pubkey_hex))
     return f"{INVITE_PREFIX}{client_key}:{node_key}:{screen_name}"
 
@@ -139,19 +145,37 @@ def _decode_key_field(field: str, label: str) -> bytes:
 
 
 def parse_invite(invite: str):
+    """Return (client_hex, node_hex, screen). Handles v1 and v2; the v2 dial
+    address is retrieved separately via invite_addr so existing callers keep
+    their 3-tuple unpacking."""
     invite = invite.strip()
-    if not invite.startswith(INVITE_PREFIX):
-        raise ValueError("invite must start with " + INVITE_PREFIX)
-    rest = invite[len(INVITE_PREFIX) :]
-    parts = rest.split(":")
-    if len(parts) != 3:
-        raise ValueError("invite must be aimless1:<client-pk>:<node-pk>:<screen-name>")
-    client_field, node_field, screen_name = parts
+    if invite.startswith(INVITE_PREFIX_V2):
+        parts = invite[len(INVITE_PREFIX_V2):].split(":")
+        if len(parts) != 4:
+            raise ValueError("invite must be aimless2:<client-pk>:<node-pk>:<addr>:<screen-name>")
+        client_field, node_field, _addr, screen_name = parts
+    elif invite.startswith(INVITE_PREFIX):
+        parts = invite[len(INVITE_PREFIX):].split(":")
+        if len(parts) != 3:
+            raise ValueError("invite must be aimless1:<client-pk>:<node-pk>:<screen-name>")
+        client_field, node_field, screen_name = parts
+    else:
+        raise ValueError("invite must start with " + INVITE_PREFIX + " or " + INVITE_PREFIX_V2)
     client_bytes = _decode_key_field(client_field, "client key")
     node_bytes = _decode_key_field(node_field, "node key")
     if not screen_name:
         raise ValueError("missing screen name")
     return client_bytes.hex(), node_bytes.hex(), screen_name
+
+
+def invite_addr(invite: str) -> str:
+    """The tailcat dial address carried by a v2 invite, or '' for v1."""
+    invite = invite.strip()
+    if invite.startswith(INVITE_PREFIX_V2):
+        parts = invite[len(INVITE_PREFIX_V2):].split(":")
+        if len(parts) == 4:
+            return parts[2]
+    return ""
 
 
 def _sign(identity: nacl.signing.SigningKey, body: bytes) -> str:

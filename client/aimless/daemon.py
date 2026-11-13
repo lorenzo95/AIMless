@@ -283,8 +283,12 @@ class Client:
             self._node_key = self.whoami()["key"]
         return self._node_key
 
-    def add_contact(self, buddy_node_hex: str) -> dict:
-        return self.daemon.request("watch", to=buddy_node_hex)
+    def transport(self) -> str:
+        """The daemon's transport name ('yggdrasil' or 'tailcat')."""
+        return self.daemon.request("status", timeout=5).get("transport", "yggdrasil")
+
+    def add_contact(self, buddy_node_hex: str, addr: str = "") -> dict:
+        return self.daemon.request("watch", to=buddy_node_hex, addr=addr)
 
     def block(self, node_hex: str) -> dict:
         return self.daemon.request("block", to=node_hex)

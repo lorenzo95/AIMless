@@ -102,12 +102,12 @@ def cmd_invite(args):
     screen = contacts.get("_self", {}).get("screen", "anonymous")
     try:
         daemon = connect_daemon()
-        node_hex = daemon.request("whoami")["key"]
+        who = daemon.request("whoami")
     except (DaemonError, KeyError, IndexError):
         print("warning: daemon unreachable - invite will lack routing key", file=sys.stderr)
         print("hint: start aimlessd, then re-run aimless invite", file=sys.stderr)
         sys.exit(1)
-    print(protocol.make_invite(identity, node_hex, screen))
+    print(protocol.make_invite(identity, who["key"], screen, addr=who.get("address")))
 
 
 def cmd_add(args):
@@ -116,6 +116,7 @@ def cmd_add(args):
     except ValueError as e:
         print("error:", e, file=sys.stderr)
         sys.exit(1)
+    addr = protocol.invite_addr(args.invite)
     contacts = protocol.load_contacts(contacts_path())
     self_pk = contacts.get("_self", {}).get("pubkey")
     if not self_pk and os.path.exists(identity_path()):
@@ -128,14 +129,15 @@ def cmd_add(args):
     petname = args.petname or screen
     for k, c in contacts.items():
         if k != "_self" and c.get("pubkey") == client_hex:
-            if c.get("node") != node_hex:
+            if c.get("node") != node_hex or c.get("addr", "") != addr:
                 c["node"] = node_hex
+                c["addr"] = addr
                 protocol.save_contacts(contacts_path(), contacts)
                 print(f"updated routing key for {petname}")
             else:
                 print("contact already known")
             sys.exit(0)
-    contacts[petname] = {"pubkey": client_hex, "node": node_hex, "screen": screen}
+    contacts[petname] = {"pubkey": client_hex, "node": node_hex, "screen": screen, "addr": addr}
     protocol.save_contacts(contacts_path(), contacts)
     print(f"added {screen} as {petname}")
 
@@ -307,7 +309,7 @@ def cmd_chat(args):
     sync = Sync(client, store)
 
     sync.sync_peer(buddy_node)
-    client.add_contact(buddy_node)
+    client.add_contact(buddy_node, buddy.get("addr", ""))
     try:
         client.set_status(buddy_client, buddy_node, None)
     except DaemonError:

@@ -33,6 +33,33 @@ def test_invite_legacy_hex_still_parses():
     assert screen == "alice"
 
 
+
+def test_invite_v2_roundtrip():
+    identity = _identity()
+    node_hex = "cd" * 32
+    addr = "tcomFwWCCcjS5nKNqAod034nWoJZW0LZqDhhC8U_dKdnDRYQ8uNGFpGQEu"
+    invite = protocol.make_invite(identity, node_hex, "alice", addr=addr)
+    assert invite.startswith("aimless2:")
+    client_hex, node_out, screen = protocol.parse_invite(invite)
+    assert client_hex == bytes(identity.verify_key).hex()
+    assert node_out == node_hex
+    assert screen == "alice"
+    assert protocol.invite_addr(invite) == addr
+
+
+def test_invite_v1_has_no_addr():
+    identity = _identity()
+    invite = protocol.make_invite(identity, "ab" * 32, "bob")
+    assert invite.startswith("aimless1:")
+    assert protocol.invite_addr(invite) == ""
+
+
+def test_invite_ygg_address_stays_v1():
+    # A Yggdrasil IPv6 address must not trigger the v2 form.
+    identity = _identity()
+    invite = protocol.make_invite(identity, "ab" * 32, "bob", addr="200:1234::1")
+    assert invite.startswith("aimless1:")
+
 def test_invite_malformed_key_raises():
     # '0', 'O', 'I', 'l' are not in the base58 alphabet and the field is not hex
     with pytest.raises(ValueError):
