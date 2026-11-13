@@ -19,6 +19,7 @@ dist/aimless-dist.tar.gz
 .pytest_cache/
 *egg-info/
 daemon/daemon
+daemon/cmd/tailcat-poc/tailcat-poc
 
 # docker webtop: synced build inputs + runtime data (build.sh repopulates these)
 deploy/docker/dist/
