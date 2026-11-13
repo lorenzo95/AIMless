@@ -113,6 +113,19 @@ can be revoked. Text is tiny and sails through; large files are slow when the
 path stays relayed. When hole-punching succeeds the relay leaves the data path
 entirely.
 
+**Regions.** The default `tailcat.dev` map is a small subset (4 regions). tailcat
+also works with the full official Tailscale DERP map
+(`https://login.tailscale.com/derpmap/default`, ~28 regions including Toronto) -
+point `derpmap_url` at it. Verified: a node on the official Toronto relay (region
+21) connects fine.
+
+Two region facts worth knowing:
+- You and a buddy can be on *different* regions and it works: each invite embeds
+  that node's own region, and the other side connects to it.
+- *Changing your own region* changes your address (the region is embedded in it),
+  so buddies who already added you need your new invite. Pick your region before
+  sharing invites.
+
 To run your own relay (no rate limit, no revocability risk), run
 [`derper`](https://github.com/tailscale/tailscale/tree/main/cmd/derper) on a host
 with a TLS certificate and point the daemon's region at it. A self-hosted relay
