@@ -67,7 +67,7 @@ func startAPIFixture(t *testing.T) (*Node, *APIServer, *Presence, string) {
 	presence := NewPresence(mail, 250*time.Millisecond)
 	presence.Start()
 	sock := t.TempDir() + "/api.sock"
-	api, err := NewAPIServer(node, mail, presence, sock, filepath.Join(dir, "config.json"))
+	api, err := NewAPIServer(&YggNode{node}, mail, presence, sock, filepath.Join(dir, "config.json"))
 	if err != nil {
 		t.Fatalf("start api: %v", err)
 	}
@@ -141,7 +141,7 @@ func TestAPISendDeliversPacket(t *testing.T) {
 	sock := t.TempDir() + "/api.sock"
 	presenceA := NewPresence(mailA, 250*time.Millisecond)
 	presenceA.Start()
-	api, err := NewAPIServer(nodeA, mailA, presenceA, sock, filepath.Join(dirA, "config.json"))
+	api, err := NewAPIServer(&YggNode{nodeA}, mailA, presenceA, sock, filepath.Join(dirA, "config.json"))
 	if err != nil {
 		t.Fatalf("start api: %v", err)
 	}

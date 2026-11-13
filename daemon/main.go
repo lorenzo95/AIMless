@@ -159,7 +159,7 @@ func run(datadir, apiPath, peersFlag, listenFlag string, retryInterval, probeInt
 		listenURLs = strings.Split(listenFlag, ",")
 	}
 
-	node, err := StartNode(datadir, peers, listenURLs, logger)
+	node, err := NewTransport(datadir, peers, listenURLs, logger)
 	if err != nil {
 		return err
 	}
@@ -192,8 +192,8 @@ func run(datadir, apiPath, peersFlag, listenFlag string, retryInterval, probeInt
 	mail.SetOnAcked(api.Acked)
 
 	fmt.Printf("aimlessd %s\n", buildVersion)
-	fmt.Printf("  address: %s\n", node.Address.String())
-	fmt.Printf("  pubkey:  %s\n", hex.EncodeToString(node.Pub))
+	fmt.Printf("  address: %s\n", node.Address())
+	fmt.Printf("  pubkey:  %s\n", hex.EncodeToString(node.Pub()))
 	fmt.Printf("  api:     %s\n", apiPath)
 	for _, p := range peers {
 		fmt.Printf("  peer:    %s\n", p)

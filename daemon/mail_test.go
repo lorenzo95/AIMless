@@ -37,7 +37,7 @@ func TestFlushPeerDoesNotMarkFailedEnqueues(t *testing.T) {
 
 	m := &Mail{
 		boxes:         map[string]*Mailbox{peer: {journal: j}},
-		node:          n,
+		node:          &YggNode{n},
 		retryInterval: 2 * time.Second,
 		blocked:       make(map[string]struct{}),
 	}

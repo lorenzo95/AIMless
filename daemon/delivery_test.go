@@ -14,7 +14,7 @@ func newTestMail(t *testing.T, datadir string, node *Node) *Mail {
 		t.Fatalf("NewMail: %v", err)
 	}
 	wireMail(node, mail)
-	mail.Attach(node)
+	mail.Attach(&YggNode{node})
 	return mail
 }
 
@@ -47,8 +47,8 @@ func TestMailDeliverAndAck(t *testing.T) {
 
 	mailA := newTestMail(t, dirA, nodeA)
 	mailB := newTestMail(t, dirB, nodeB)
-	mailA.Attach(nodeA)
-	mailB.Attach(nodeB)
+	mailA.Attach(&YggNode{nodeA})
+	mailB.Attach(&YggNode{nodeB})
 
 	delivered := make(chan struct{}, 8)
 	var gotPayload []byte
@@ -105,7 +105,7 @@ func TestMailOfflineDelivery(t *testing.T) {
 	}
 
 	mailA := newTestMail(t, dirA, nodeA)
-	mailA.Attach(nodeA)
+	mailA.Attach(&YggNode{nodeA})
 
 	seq, err := mailA.SendMsg(pubB32, []byte("while you were out"))
 	if err != nil {
@@ -123,7 +123,7 @@ func TestMailOfflineDelivery(t *testing.T) {
 	waitForPeerUp(t, nodeB.Core, 15*time.Second)
 
 	mailB := newTestMail(t, dirB, nodeB)
-	mailB.Attach(nodeB)
+	mailB.Attach(&YggNode{nodeB})
 
 	delivered := make(chan struct{}, 8)
 	// The callback runs on the node's read loop, so the values it hands over
@@ -175,8 +175,8 @@ func TestMailHistoryReplay(t *testing.T) {
 
 	mailA := newTestMail(t, dirA, nodeA)
 	mailB := newTestMail(t, dirB, nodeB)
-	mailA.Attach(nodeA)
-	mailB.Attach(nodeB)
+	mailA.Attach(&YggNode{nodeA})
+	mailB.Attach(&YggNode{nodeB})
 
 	acked := make(chan struct{}, 32)
 	mailA.SetOnAcked(func(to ed25519.PublicKey, seq uint64) {
@@ -260,8 +260,8 @@ func TestBlockInboundDropsUntilUnblock(t *testing.T) {
 
 	mailA := newTestMail(t, dirA, nodeA)
 	mailB := newTestMail(t, dirB, nodeB)
-	mailA.Attach(nodeA)
-	mailB.Attach(nodeB)
+	mailA.Attach(&YggNode{nodeA})
+	mailB.Attach(&YggNode{nodeB})
 
 	delivered := make(chan struct{}, 8)
 	mailA.SetOnDeliver(func(from ed25519.PublicKey, seq uint64, ts int64, payload []byte) {

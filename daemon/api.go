@@ -15,8 +15,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/yggdrasil-network/yggdrasil-go/src/core"
 )
 
 const buildVersion = "aimlessd/0.9.11"
@@ -24,18 +22,6 @@ const buildVersion = "aimlessd/0.9.11"
 // protocolVersion identifies the wire format spoken to other daemons. Peers on a
 // different version are ignored rather than misparsed; there is no compat layer.
 const protocolVersion = 2
-
-type peerStatus struct {
-	URI     string `json:"uri"`
-	Up      bool   `json:"up"`
-	Latency int64  `json:"latency_ms"`
-	Inbound bool   `json:"inbound"`
-	TXBytes uint64 `json:"tx_bytes"`
-	RXBytes uint64 `json:"rx_bytes"`
-	// Error is why the peer is not usable: the last dial error, or the
-	// reason it was refused at startup (an unresolvable hostname).
-	Error string `json:"error,omitempty"`
-}
 
 type historyMsg struct {
 	Seq     uint64 `json:"seq"`
@@ -97,7 +83,7 @@ func (c *apiConn) write(data []byte) {
 }
 
 type APIServer struct {
-	node     *Node
+	node     Transport
 	mail     *Mail
 	presence *Presence
 	ln       net.Listener
@@ -109,7 +95,7 @@ type APIServer struct {
 	configPath string
 }
 
-func NewAPIServer(node *Node, mail *Mail, presence *Presence, socketPath, configPath string) (*APIServer, error) {
+func NewAPIServer(node Transport, mail *Mail, presence *Presence, socketPath, configPath string) (*APIServer, error) {
 	if err := os.Remove(socketPath); err != nil && !os.IsNotExist(err) {
 		return nil, fmt.Errorf("remove stale socket: %w", err)
 	}
@@ -180,40 +166,16 @@ func (s *APIServer) dispatch(conn *apiConn, req apiMessage) {
 	}
 	switch req.Op {
 	case "whoami":
-		s.replyReq(conn, req, apiMessage{Op: "whoami", Address: s.node.Address.String(), Key: hex.EncodeToString(s.node.Pub), Pid: os.Getpid()})
+		s.replyReq(conn, req, apiMessage{Op: "whoami", Address: s.node.Address(), Key: hex.EncodeToString(s.node.Pub()), Pid: os.Getpid()})
 	case "status":
-		// GetPeers reads the peer's RTT sample without holding the lock the
-		// peer actor writes it with, so `go test -race` can flag a race inside
-		// ironwood when a peer completes its handshake at the same moment.
-		// It is upstream (ironwood network/peers.go), harmless in practice -
-		// the sample is only used for the latency readout.
-		peers := s.node.Core.GetPeers()
-		out := make([]peerStatus, 0, len(peers))
-		for _, p := range peers {
-			out = append(out, peerStatus{
-				URI:     p.URI,
-				Up:      p.Up,
-				Latency: p.Latency.Milliseconds(),
-				Inbound: p.Inbound,
-				TXBytes: p.TXBytes,
-				RXBytes: p.RXBytes,
-				Error:   lastPeerError(p),
-			})
-		}
-		// Peers we refused (a hostname that does not resolve) are peers too:
-		// the client has to show them, or the list silently shrinks.
-		_, refused := s.node.PeerState()
-		for uri, reason := range refused {
-			out = append(out, peerStatus{URI: uri, Error: reason})
-		}
 		s.replyReq(conn, req, apiMessage{
 			Op:           "status",
-			Address:      s.node.Address.String(),
-			Key:          hex.EncodeToString(s.node.Pub),
-			Peers:        out,
+			Address:      s.node.Address(),
+			Key:          hex.EncodeToString(s.node.Pub()),
+			Peers:        s.node.PeerStatuses(),
 			PeerList:     s.node.ConfiguredPeers(),
-			DefaultPeers: defaultPeers,
-			MTU:          int(s.node.Core.MTU()),
+			DefaultPeers: s.node.DefaultPeers(),
+			MTU:          s.node.MTU(),
 			Build:        buildVersion,
 		})
 	case "send":
@@ -414,10 +376,10 @@ func (s *APIServer) handleSetPeers(conn *apiConn, req apiMessage) {
 		s.replyReq(conn, req, apiMessage{Op: "error", Error: err.Error()})
 		return
 	}
-	added, removed, failed := s.node.SetPeers(s.node.Core, peers)
+	added, removed, failed := s.node.SetPeers(peers)
 	s.replyReq(conn, req, apiMessage{
 		Op:      "peers",
-		Peers:   s.peerStatuses(),
+		Peers:   s.node.PeerStatuses(),
 		Added:   added,
 		Removed: removed,
 		Failed:  failed,
@@ -465,14 +427,6 @@ func validatePeerURI(uri string) error {
 	return nil
 }
 
-// lastPeerError is why a peer is not up, if we know.
-func lastPeerError(p core.PeerInfo) string {
-	if p.LastError != nil {
-		return p.LastError.Error()
-	}
-	return ""
-}
-
 // savePeers writes the peer list to the daemon's config.json.
 //
 // The file is the source of truth: the daemon reads it at startup, so what the
@@ -491,28 +445,6 @@ func (s *APIServer) savePeers(peers []string) error {
 	list = append(list, peers...)
 	cfg.Peers = &list
 	return saveConfig(s.configPath, cfg)
-}
-
-// peerStatuses is the status op's peer list.
-func (s *APIServer) peerStatuses() []peerStatus {
-	peers := s.node.Core.GetPeers()
-	out := make([]peerStatus, 0, len(peers))
-	for _, p := range peers {
-		out = append(out, peerStatus{
-			URI:     p.URI,
-			Up:      p.Up,
-			Latency: p.Latency.Milliseconds(),
-			Inbound: p.Inbound,
-			TXBytes: p.TXBytes,
-			RXBytes: p.RXBytes,
-			Error:   lastPeerError(p),
-		})
-	}
-	_, refused := s.node.PeerState()
-	for uri, reason := range refused {
-		out = append(out, peerStatus{URI: uri, Error: reason})
-	}
-	return out
 }
 
 func (s *APIServer) handleBlock(conn *apiConn, req apiMessage, block bool) {

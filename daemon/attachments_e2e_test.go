@@ -32,8 +32,8 @@ func TestFileChunkDeliveryRetrievalAndAck(t *testing.T) {
 
 	mailA := newTestMail(t, dirA, nodeA)
 	mailB := newTestMail(t, dirB, nodeB)
-	mailA.Attach(nodeA)
-	mailB.Attach(nodeB)
+	mailA.Attach(&YggNode{nodeA})
+	mailB.Attach(&YggNode{nodeB})
 
 	delivered := make(chan struct{}, 8)
 	mailA.SetOnDeliverFile(func(from ed25519.PublicKey, seq uint64, ts int64, payload []byte) {
@@ -113,8 +113,8 @@ func TestFileChunkBlockedDropsLikeText(t *testing.T) {
 
 	mailA := newTestMail(t, dirA, nodeA)
 	mailB := newTestMail(t, dirB, nodeB)
-	mailA.Attach(nodeA)
-	mailB.Attach(nodeB)
+	mailA.Attach(&YggNode{nodeA})
+	mailB.Attach(&YggNode{nodeB})
 
 	delivered := make(chan struct{}, 8)
 	mailA.SetOnDeliverFile(func(from ed25519.PublicKey, seq uint64, ts int64, payload []byte) {
@@ -162,8 +162,8 @@ func TestFileChunkDedupFiresDeliverOnce(t *testing.T) {
 
 	mailA := newTestMail(t, dirA, nodeA)
 	mailB := newTestMail(t, dirB, nodeB)
-	mailA.Attach(nodeA)
-	mailB.Attach(nodeB)
+	mailA.Attach(&YggNode{nodeA})
+	mailB.Attach(&YggNode{nodeB})
 
 	// The callback runs on the node's read loop: guard the counter.
 	var countMu sync.Mutex

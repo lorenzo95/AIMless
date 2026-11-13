@@ -149,7 +149,7 @@ func TestSetPeersStoresAndApplies(t *testing.T) {
 	presence.Start()
 	configPath := filepath.Join(dir, "config.json")
 	sock := filepath.Join(dir, "api.sock")
-	api, err := NewAPIServer(node, mail, presence, sock, configPath)
+	api, err := NewAPIServer(&YggNode{node}, mail, presence, sock, configPath)
 	if err != nil {
 		t.Fatalf("start api: %v", err)
 	}
@@ -195,7 +195,7 @@ func TestSetPeersRefusesABadURI(t *testing.T) {
 	presence.Start()
 	configPath := filepath.Join(dir, "config.json")
 	sock := filepath.Join(dir, "api.sock")
-	api, err := NewAPIServer(node, mail, presence, sock, configPath)
+	api, err := NewAPIServer(&YggNode{node}, mail, presence, sock, configPath)
 	if err != nil {
 		t.Fatalf("start api: %v", err)
 	}

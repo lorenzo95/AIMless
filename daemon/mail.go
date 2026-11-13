@@ -57,7 +57,7 @@ type Mail struct {
 	// these are installed, so they are read under a lock. Without it the
 	// race detector flags every packet that arrives during startup.
 	shared        sync.RWMutex
-	node          *Node
+	node          Transport
 	presence      *Presence
 	onDeliver     func(from ed25519.PublicKey, seq uint64, ts int64, payload []byte)
 	onDeliverFile func(from ed25519.PublicKey, seq uint64, ts int64, payload []byte)
@@ -65,7 +65,7 @@ type Mail struct {
 }
 
 // SetNode attaches the node the daemon sends through.
-func (m *Mail) SetNode(node *Node) {
+func (m *Mail) SetNode(node Transport) {
 	m.shared.Lock()
 	m.node = node
 	m.shared.Unlock()
@@ -99,7 +99,7 @@ func (m *Mail) SetOnAcked(f func(to ed25519.PublicKey, seq uint64)) {
 	m.shared.Unlock()
 }
 
-func (m *Mail) nodeRef() *Node {
+func (m *Mail) nodeRef() Transport {
 	m.shared.RLock()
 	defer m.shared.RUnlock()
 	return m.node
@@ -333,7 +333,7 @@ func (m *Mail) Watch(pub ed25519.PublicKey) error {
 	return nil
 }
 
-func (m *Mail) Attach(node *Node) {
+func (m *Mail) Attach(node Transport) {
 	m.SetNode(node)
 	go m.retryLoop()
 }
