@@ -216,6 +216,32 @@ By default the client owns a local daemon: if your machine is off, a message sen
 
 The daemon holds ciphertext and the node key only - your identity stays on the client. **One client per daemon.** A daemon-only host has no client attached by design, so from the buddies' side that node shows as *client offline - messages will be delivered* until a client connects over the tunnel.
 
+## Alternative transport: tailcat (experimental)
+
+This branch can run over [tailcat](https://github.com/tailscale/tailcat) instead of
+Yggdrasil. tailcat is Tailscale's data plane (WireGuard + magicsock + DERP) without
+the control plane: it hole-punches a **direct peer-to-peer path** when the network
+allows and falls back to a DERP relay when it does not, so two machines behind NAT
+can talk directly instead of routing through the overlay tree. The E2E encryption
+is unchanged - tailcat is just a second encrypted transport underneath.
+
+It is a **separate daemon binary**, selected per machine (no runtime toggle, no
+dual-homing). To try it, download the tailcat daemon and point the client at it with
+a **separate `AIMLESS_HOME`** so its keys/contacts stay distinct from Yggdrasil:
+
+```sh
+mkdir -p ~/.local/bin && cd ~/.local/bin
+wget https://raw.githubusercontent.com/lorenzo95/Aimless/tailcat-transport/dist/aimlessd-tailcat-linux-amd64
+wget https://raw.githubusercontent.com/lorenzo95/Aimless/tailcat-transport/dist/aimless.pyz
+chmod +x aimlessd-tailcat-linux-amd64 aimless.pyz
+AIMLESS_DAEMON_BIN=$PWD/aimlessd-tailcat-linux-amd64 AIMLESS_HOME=~/.local/share/aimless-tc ./aimless.pyz
+```
+
+Both peers must run tailcat and exchange **v2 invites** (`aimless2:...`, which carry
+the dial address). The default public DERP relays work out of the box; to run your
+own relay (no rate limits), use the relay panel in the app or the `relay` block in
+the daemon's `config.json`. Full details: **[docs/tailcat.md](docs/tailcat.md)**.
+
 ---
 
 ## How it works
@@ -273,22 +299,25 @@ More detail lives in **[docs/networking.md](docs/networking.md)** (peers, listen
 
 ```sh
 cd daemon && go build -o aimlessd . && ./aimlessd -datadir ~/.local/share/aimless/daemon
+cd daemon && go build -tags tailcat -o aimlessd-tailcat .   # alternative transport
 cd ../client && pip install . && aimless
 ```
 
 ## Development
 
 ```sh
-cd daemon && go test ./...       # codec, journals, delivery, presence, integration
-cd client && pytest tests/       # crypto, protocol, store, real-daemon e2e, GTK
-cd deploy && python3 smoke.py    # two-node deployment, including offline delivery
-./deploy/package.sh              # build the versioned dist/ artifacts
-python3 deploy/check_dist.py     # release gate: the committed dist matches the source
+cd daemon && go test ./...               # codec, journals, delivery, presence, integration
+cd daemon && go test -tags tailcat ./... # tailcat transport integration (local DERP)
+cd client && pytest tests/               # crypto, protocol, store, real-daemon e2e, GTK
+cd deploy && python3 smoke.py            # two-node deployment, including offline delivery
+python3 deploy/smoke_tailcat.py          # tailcat over public DERP (DM + group rooms)
+./deploy/package.sh                      # build the versioned dist/ artifacts (both daemons)
+python3 deploy/check_dist.py             # release gate: the committed dist matches the source
 ```
 
 ## Status
 
-Experimental. Both Yggdrasil and AIMless are alpha - not for security-critical use.
+Experimental. Yggdrasil, tailcat and AIMless are all alpha - not for security-critical use.
 
 ---
 
