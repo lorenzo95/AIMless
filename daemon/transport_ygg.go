@@ -76,3 +76,9 @@ func lastPeerError(p core.PeerInfo) string {
 	}
 	return ""
 }
+
+// SetRelay is a no-op for Yggdrasil: it has no DERP relay (relay config is a
+// tailcat concept).
+func (y *YggNode) SetRelay(cfg RelayConfig) (string, error) { return y.Address(), nil }
+
+func (y *YggNode) RelayConfig() RelayConfig { return RelayConfig{} }

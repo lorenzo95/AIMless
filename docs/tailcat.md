@@ -154,8 +154,10 @@ unaffected. Verified end-to-end over public DERP by
 
 - No runtime transport toggle, no dual-homing, no per-contact delivery switching
   (that would require re-keying conversations/rooms on the client E2E key).
-- `setrelay` (runtime relay change) and config-file region/derpmap selection are
-  not yet implemented; the region comes from the keyset or is injected in tests.
+- Relay configuration is via the `setrelay` op, the `config.json` `relay` block
+  (`hostname` and/or `derpmap_url`), or the GUI relay panel. It applies on daemon
+  restart — the relay is embedded in the address, so a live change would change
+  the address mid-session and stale invites.
 - The GUI is transport-aware (relay panel, relay-based tray/status, v2 invite
   add-buddy); `gtkui.py` is still a monolith and would benefit from extraction.
 - tailcat v0.7.0 makes no API/wire stability promises; the version is pinned.

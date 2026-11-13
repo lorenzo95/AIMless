@@ -229,3 +229,40 @@ func TestTailcatAddrPersistence(t *testing.T) {
 	}
 	tcWaitPayload(t, delivered, "second", 20*time.Second)
 }
+
+func TestTailcatRelayConfig(t *testing.T) {
+	reg := tcRegion(t)
+	dir := t.TempDir()
+	node, err := newTailcatNode(dir, reg, &aimlessLogger{})
+	if err != nil {
+		t.Fatalf("newTailcatNode: %v", err)
+	}
+	t.Cleanup(node.Stop)
+
+	if node.RelayConfig() != (RelayConfig{}) {
+		t.Fatal("expected empty relay config by default")
+	}
+	if _, err := node.SetRelay(RelayConfig{Hostname: "derp.example.com"}); err != nil {
+		t.Fatalf("SetRelay: %v", err)
+	}
+	if node.RelayConfig().Hostname != "derp.example.com" {
+		t.Fatal("relay not stored in memory")
+	}
+	if rc := loadRelayConfig(dir); rc.Hostname != "derp.example.com" {
+		t.Fatalf("relay not persisted to config.json: %+v", rc)
+	}
+	r := regionForRelay(RelayConfig{Hostname: "derp.example.com, derp2.example.com"})
+	if r == nil || len(r.Nodes) != 2 || r.Nodes[0].HostName != "derp.example.com" {
+		t.Fatalf("regionForRelay built wrong region: %+v", r)
+	}
+	// Clearing removes the relay (back to default public relays).
+	if _, err := node.SetRelay(RelayConfig{}); err != nil {
+		t.Fatalf("SetRelay clear: %v", err)
+	}
+	if loadRelayConfig(dir) != (RelayConfig{}) {
+		t.Fatal("relay not cleared from config.json")
+	}
+	if regionForRelay(RelayConfig{}) != nil {
+		t.Fatal("empty relay should yield no custom region")
+	}
+}

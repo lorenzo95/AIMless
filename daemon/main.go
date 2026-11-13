@@ -74,8 +74,9 @@ const defaultProbeInterval = 15 * time.Second
 // "peers" being an empty list (no peers at all) are different things - the
 // same distinction the -peers flag makes with "none".
 type configFile struct {
-	Peers  *[]string `json:"peers,omitempty"`
-	Listen []string  `json:"listen,omitempty"`
+	Peers  *[]string    `json:"peers,omitempty"`
+	Listen []string     `json:"listen,omitempty"`
+	Relay  *RelayConfig `json:"relay,omitempty"`
 }
 
 func saveConfig(path string, cfg *configFile) error {

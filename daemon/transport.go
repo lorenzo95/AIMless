@@ -57,4 +57,19 @@ type Transport interface {
 	// key to our server. The Yggdrasil transport ignores it (routing is by
 	// node key, so no address is needed).
 	AddPeerAddr(id PeerID, addr string)
+	// SetRelay persists a new DERP relay configuration (tailcat) and returns
+	// the current address. The new relay applies on the next daemon restart —
+	// changing the relay changes the address, so invites go stale. Yggdrasil
+	// ignores it.
+	SetRelay(cfg RelayConfig) (string, error)
+	// RelayConfig is the persisted DERP relay configuration (tailcat).
+	RelayConfig() RelayConfig
+}
+
+// RelayConfig selects the DERP relay for the tailcat transport. Hostname is a
+// self-hosted relay (or comma-separated list); DERPMapURL is an alternate DERP
+// map. Both empty means the default public relays (nearest region).
+type RelayConfig struct {
+	Hostname   string `json:"hostname,omitempty"`
+	DERPMapURL string `json:"derpmap_url,omitempty"`
 }

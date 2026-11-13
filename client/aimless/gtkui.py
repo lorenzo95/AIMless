@@ -1017,6 +1017,7 @@ class DaemonSupervisor:
                 "build": st.get("build", ""),
                 "mtu": st.get("mtu", 0),
                 "transport": st.get("transport", "yggdrasil"),
+                "relay": st.get("relay") or {},
             }
         except Exception:
             return None
@@ -5296,13 +5297,14 @@ class AimlessApp:
             self._apply_peer_list(peers)
 
     def _relay_dialog(self, parent, st, first_run=False):
-        """The tailcat relay panel. tailcat reaches each buddy directly when the
-        network allows and falls back to a DERP relay otherwise; the relay is
-        baked into the address, so there is no peer list to edit. Public relays
-        work out of the box."""
+        """The tailcat relay panel: shows the address and lets you point the
+        daemon at a self-hosted DERP relay. The relay is embedded in the address,
+        so changing it changes your address (applies after a restart)."""
         title = "AIMless - step 2 of 2: relay" if first_run else "AIMless - relay"
         dlg = Gtk.Dialog(title=title, transient_for=parent, modal=True)
         setup_app_icon(dlg)
+        if not first_run:
+            dlg.add_button("Save", Gtk.ResponseType.APPLY)
         dlg.add_button("Finish" if first_run else "Close", Gtk.ResponseType.OK)
         dlg.set_default_size(560, -1)
         box = dlg.get_content_area()
@@ -5314,23 +5316,67 @@ class AimlessApp:
         info = Gtk.Label(label=(
             "tailcat connects you directly to each buddy when the network allows, "
             "and falls back to a DERP relay when it does not. The default public "
-            "relays work out of the box - there is nothing to configure.\n\n"
-            "To run your own relay (no rate limits), run derper on a host with a "
-            "TLS certificate and point the daemon at it. See docs/tailcat.md."))
+            "relays work out of the box.\n\n"
+            "To use your own relay (no rate limits), run derper on a host with a "
+            "TLS certificate and enter its hostname below. See docs/tailcat.md."))
         info.set_xalign(0)
         info.set_line_wrap(True)
         box.pack_start(info, False, False, 0)
+
+        relay = st.get("relay") or {}
+        hl = Gtk.Label(label="Self-hosted relay hostname (blank = public relays):")
+        hl.set_xalign(0)
+        box.pack_start(hl, False, False, 0)
+        host_entry = Gtk.Entry()
+        host_entry.set_text(relay.get("hostname", ""))
+        host_entry.set_placeholder_text("derp.example.com")
+        box.pack_start(host_entry, False, False, 0)
+        ml = Gtk.Label(label="DERP map URL (optional):")
+        ml.set_xalign(0)
+        box.pack_start(ml, False, False, 0)
+        map_entry = Gtk.Entry()
+        map_entry.set_text(relay.get("derpmap_url", ""))
+        map_entry.set_placeholder_text("https://tailcat.dev/derpmap.json")
+        box.pack_start(map_entry, False, False, 0)
+
         addr = st.get("address", "")
-        if addr:
-            al = Gtk.Label(label="Your tailcat address (share it as an invite):")
-            al.set_xalign(0)
-            box.pack_start(al, False, False, 0)
-            entry = Gtk.Entry()
-            entry.set_text(addr)
-            entry.set_editable(False)
-            box.pack_start(entry, False, False, 0)
+        al = Gtk.Label(label="Your tailcat address (share it as an invite):")
+        al.set_xalign(0)
+        box.pack_start(al, False, False, 0)
+        addr_entry = Gtk.Entry()
+        addr_entry.set_text(addr)
+        addr_entry.set_editable(False)
+        box.pack_start(addr_entry, False, False, 0)
+
+        note = Gtk.Label(label=(
+            "Changing the relay changes your address, so buddies need your new "
+            "invite. Saved changes apply after AIMless restarts."))
+        note.set_xalign(0)
+        note.set_line_wrap(True)
+        note.set_opacity(0.7)
+        box.pack_start(note, False, False, 0)
+        status = Gtk.Label(label="")
+        status.set_xalign(0)
+        box.pack_start(status, False, False, 0)
+
         dlg.show_all()
-        dlg.run()
+        while True:
+            resp = dlg.run()
+            if resp != Gtk.ResponseType.APPLY:
+                break
+            cfg = {"hostname": host_entry.get_text().strip(),
+                   "derpmap_url": map_entry.get_text().strip()}
+            try:
+                d = DaemonClient(self.supervisor.sock)
+                r = d.request("setrelay", relay=cfg, timeout=10)
+                d.close()
+                if r.get("op") == "relay":
+                    addr_entry.set_text(r.get("address", addr))
+                    status.set_text("Saved. Restart AIMless to apply the new relay.")
+                else:
+                    status.set_text(f"error: {r.get('error', 'unknown')}")
+            except Exception as e:
+                status.set_text(f"error: {e}")
         dlg.destroy()
 
     def open_window(self):

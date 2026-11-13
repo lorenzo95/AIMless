@@ -61,6 +61,7 @@ type TailcatNode struct {
 	psk     tailcat.PresharedKey
 	server  *tailcat.Server
 	logger  *aimlessLogger
+	relay   RelayConfig
 
 	mu        sync.Mutex
 	addrs     map[string]string          // peer hex -> tailcat address (dial target)
@@ -98,23 +99,42 @@ func newTailcatNode(datadir string, region *tailcfg.DERPRegion, log *aimlessLogg
 	if err := psk.UnmarshalText([]byte(ks.PSK)); err != nil {
 		return nil, fmt.Errorf("parse tailcat psk: %w", err)
 	}
+	relay := loadRelayConfig(datadir)
+	derpMapURL := relay.DERPMapURL
 	if region == nil {
-		region = ks.Region
+		if r := regionForRelay(relay); r != nil {
+			region = r
+		} else {
+			region = ks.Region
+		}
+	} else {
+		derpMapURL = "" // injected region (tests): no DERP map fetch
 	}
 	t := &TailcatNode{
 		datadir: datadir,
 		priv:    priv,
 		psk:     psk,
 		logger:  log,
+		relay:   relay,
 		addrs:   make(map[string]string),
 		clients: make(map[string]*tailcat.Client),
 		conns:   make(map[string]net.Conn),
 	}
-	logf := func(format string, args ...any) { log.Printf(format, args...) }
+	if err := t.startServer(region, derpMapURL); err != nil {
+		return nil, err
+	}
+	return t, nil
+}
+
+// startServer creates and starts the tailcat.Server with the given relay. The
+// OnTCP handler closes over t, so it survives a server swap.
+func (t *TailcatNode) startServer(region *tailcfg.DERPRegion, derpMapURL string) error {
+	logf := func(format string, args ...any) { t.logger.Printf(format, args...) }
 	t.server = &tailcat.Server{
-		Key:          priv,
-		PresharedKey: psk,
+		Key:          t.priv,
+		PresharedKey: t.psk,
 		Region:       region,
+		DERPMapURL:   derpMapURL,
 		Logf:         logf,
 		OnTCP: func(port uint16) func(net.Conn) {
 			if port != tailcatPort {
@@ -132,9 +152,9 @@ func newTailcatNode(datadir string, region *tailcfg.DERPRegion, log *aimlessLogg
 		},
 	}
 	if err := t.server.Start(); err != nil {
-		return nil, fmt.Errorf("start tailcat server: %w", err)
+		return fmt.Errorf("start tailcat server: %w", err)
 	}
-	return t, nil
+	return nil
 }
 
 func loadOrCreateTailcatKey(datadir string) (*tailcatKeyset, error) {
@@ -461,4 +481,65 @@ func nodePublicFromPeerID(id PeerID) (key.NodePublic, error) {
 		return key.NodePublic{}, fmt.Errorf("bad peer id length %d", len(id))
 	}
 	return key.NodePublicFromRaw32(mem.B(id)), nil
+}
+
+// --- relay configuration ---
+
+func (t *TailcatNode) RelayConfig() RelayConfig {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.relay
+}
+
+// SetRelay persists a new relay configuration. It applies on the next daemon
+// restart: the relay is embedded in the tailcat address, so changing it changes
+// the address (and stales old invites). Returns the current address.
+func (t *TailcatNode) SetRelay(cfg RelayConfig) (string, error) {
+	if err := saveRelayConfig(t.datadir, cfg); err != nil {
+		return "", err
+	}
+	t.mu.Lock()
+	t.relay = cfg
+	t.mu.Unlock()
+	return t.Address(), nil
+}
+
+func loadRelayConfig(datadir string) RelayConfig {
+	cfg, err := loadConfig(filepath.Join(datadir, "config.json"))
+	if err != nil || cfg.Relay == nil {
+		return RelayConfig{}
+	}
+	return *cfg.Relay
+}
+
+func saveRelayConfig(datadir string, rc RelayConfig) error {
+	path := filepath.Join(datadir, "config.json")
+	cfg, err := loadConfig(path)
+	if err != nil {
+		return err
+	}
+	if rc.Hostname == "" && rc.DERPMapURL == "" {
+		cfg.Relay = nil
+	} else {
+		cfg.Relay = &rc
+	}
+	return saveConfig(path, cfg)
+}
+
+// regionForRelay builds a custom DERP region from a self-hosted relay hostname
+// (or comma-separated list). Empty hostname means no custom region.
+func regionForRelay(cfg RelayConfig) *tailcfg.DERPRegion {
+	if strings.TrimSpace(cfg.Hostname) == "" {
+		return nil
+	}
+	reg := &tailcfg.DERPRegion{}
+	for _, host := range strings.Split(cfg.Hostname, ",") {
+		if host = strings.TrimSpace(host); host != "" {
+			reg.Nodes = append(reg.Nodes, &tailcfg.DERPNode{HostName: host})
+		}
+	}
+	if len(reg.Nodes) == 0 {
+		return nil
+	}
+	return reg
 }

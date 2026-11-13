@@ -47,22 +47,24 @@ type apiMessage struct {
 	PeerList []string     `json:"peer_list,omitempty"`
 	// DefaultPeers is the built-in list, so the client can offer to restore
 	// it when the configured one is empty or broken.
-	DefaultPeers []string          `json:"default_peers,omitempty"`
-	Added        []string          `json:"added,omitempty"`
-	Removed      []string          `json:"removed,omitempty"`
-	Failed       map[string]string `json:"failed,omitempty"`
-	MTU          int               `json:"mtu,omitempty"`
-	Build        string            `json:"build,omitempty"`
-	Transport    string            `json:"transport,omitempty"`
-	Msgs         []historyMsg      `json:"msgs,omitempty"`
-	Oldest       uint64            `json:"oldest,omitempty"`
-	Latest       uint64            `json:"latest,omitempty"`
-	Presence     []presenceEntry   `json:"presence,omitempty"`
-	Blocked      []string          `json:"blocked,omitempty"`
-	Type         string            `json:"type,omitempty"`
-	Transfers    []AttachPending   `json:"transfers,omitempty"`
-	Chunks       []attachEntry     `json:"chunks,omitempty"`
-	Tid          string            `json:"tid,omitempty"`
+	DefaultPeers    []string          `json:"default_peers,omitempty"`
+	Added           []string          `json:"added,omitempty"`
+	Removed         []string          `json:"removed,omitempty"`
+	Failed          map[string]string `json:"failed,omitempty"`
+	MTU             int               `json:"mtu,omitempty"`
+	Build           string            `json:"build,omitempty"`
+	Transport       string            `json:"transport,omitempty"`
+	Msgs            []historyMsg      `json:"msgs,omitempty"`
+	Oldest          uint64            `json:"oldest,omitempty"`
+	Latest          uint64            `json:"latest,omitempty"`
+	Presence        []presenceEntry   `json:"presence,omitempty"`
+	Blocked         []string          `json:"blocked,omitempty"`
+	Type            string            `json:"type,omitempty"`
+	Transfers       []AttachPending   `json:"transfers,omitempty"`
+	Chunks          []attachEntry     `json:"chunks,omitempty"`
+	Tid             string            `json:"tid,omitempty"`
+	Relay           RelayConfig       `json:"relay,omitempty"`
+	RestartRequired bool              `json:"restart_required,omitempty"`
 }
 
 // apiConn is one client connection.
@@ -180,6 +182,7 @@ func (s *APIServer) dispatch(conn *apiConn, req apiMessage) {
 			MTU:          s.node.MTU(),
 			Build:        buildVersion,
 			Transport:    transportName,
+			Relay:        s.node.RelayConfig(),
 		})
 	case "send":
 		s.handleSend(conn, req)
@@ -205,6 +208,8 @@ func (s *APIServer) dispatch(conn *apiConn, req apiMessage) {
 		s.handleBlock(conn, req, false)
 	case "setpeers":
 		s.handleSetPeers(conn, req)
+	case "setrelay":
+		s.handleSetRelay(conn, req)
 	case "blocklist":
 		s.replyReq(conn, req, apiMessage{Op: "blocklist", Blocked: s.mail.Blocked()})
 	case "":
@@ -571,4 +576,21 @@ func (s *APIServer) Close() error {
 		conn.Close()
 	}
 	return s.ln.Close()
+}
+
+// handleSetRelay persists a new DERP relay configuration (tailcat). It applies
+// on the next daemon restart: the relay is embedded in the address, so changing
+// it changes the address (and stales old invites).
+func (s *APIServer) handleSetRelay(conn *apiConn, req apiMessage) {
+	addr, err := s.node.SetRelay(req.Relay)
+	if err != nil {
+		s.replyReq(conn, req, apiMessage{Op: "error", Error: "setrelay failed: " + err.Error()})
+		return
+	}
+	s.replyReq(conn, req, apiMessage{
+		Op:              "relay",
+		Address:         addr,
+		Relay:           req.Relay,
+		RestartRequired: true,
+	})
 }
