@@ -1,3 +1,5 @@
+//go:build !tailcat
+
 package main
 
 import (
