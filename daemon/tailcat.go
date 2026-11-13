@@ -419,6 +419,8 @@ func (t *TailcatNode) MTU() int { return 0 } // TCP: no datagram MTU ceiling
 
 func (t *TailcatNode) DefaultPeers() []string { return nil }
 
+const transportName = "tailcat"
+
 func (t *TailcatNode) relayLabel() string {
 	return "tailcat:" + string(t.server.TailcatAddr())
 }

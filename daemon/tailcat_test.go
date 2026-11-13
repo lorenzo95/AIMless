@@ -196,3 +196,36 @@ func TestTailcatReconnect(t *testing.T) {
 
 	tcWaitPayload(t, delivered, "second", 30*time.Second)
 }
+
+func TestTailcatAddrPersistence(t *testing.T) {
+	reg := tcRegion(t)
+	dirA, dirB := t.TempDir(), t.TempDir()
+	nodeA, mailA := tcMail(t, dirA, reg)
+	nodeB, mailB := tcMail(t, dirB, reg)
+
+	// Register through the contacts layer (persists addrs to contacts.json),
+	// not AddPeerAddr directly — this is the path the watch op uses.
+	if err := mailA.RememberAddr(nodeB.Pub(), nodeB.Address()); err != nil {
+		t.Fatalf("RememberAddr A: %v", err)
+	}
+	if err := mailB.RememberAddr(nodeA.Pub(), nodeA.Address()); err != nil {
+		t.Fatalf("RememberAddr B: %v", err)
+	}
+	delivered := make(chan []byte, 16)
+	mailB.SetOnDeliver(func(from PeerID, seq uint64, ts int64, p []byte) { delivered <- p })
+	if _, err := mailA.SendMsg(nodeB.Pub(), []byte("first")); err != nil {
+		t.Fatalf("SendMsg first: %v", err)
+	}
+	tcWaitPayload(t, delivered, "first", 20*time.Second)
+
+	// Restart A's daemon on the same datadir. A fresh Mail must reload the
+	// persisted addresses via Attach and dial B without re-watching.
+	nodeA.Stop()
+	mailA.Close()
+	nodeA2, mailA2 := tcMail(t, dirA, reg)
+	_ = nodeA2
+	if _, err := mailA2.SendMsg(nodeB.Pub(), []byte("second")); err != nil {
+		t.Fatalf("SendMsg after restart: %v", err)
+	}
+	tcWaitPayload(t, delivered, "second", 20*time.Second)
+}

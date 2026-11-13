@@ -36,6 +36,11 @@ func (y *YggNode) SetPeers(peers []string) ([]string, []string, map[string]strin
 func (y *YggNode) MTU() int               { return int(y.n.Core.MTU()) }
 func (y *YggNode) DefaultPeers() []string { return defaultPeers }
 
+const transportName = "yggdrasil"
+
+// AddPeerAddr is a no-op for Yggdrasil: peers are routed by node key.
+func (y *YggNode) AddPeerAddr(id PeerID, addr string) {}
+
 // PeerStatuses is the status op's peer list. GetPeers reads a peer's RTT sample
 // without holding the lock the peer actor writes it with, so `go test -race` can
 // flag a race inside ironwood when a peer completes its handshake at the same

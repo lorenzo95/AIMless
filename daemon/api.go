@@ -36,6 +36,7 @@ type apiMessage struct {
 	Key      string       `json:"key,omitempty"`
 	Pid      int          `json:"pid,omitempty"`
 	To       string       `json:"to,omitempty"`
+	Addr     string       `json:"addr,omitempty"`
 	From     string       `json:"from,omitempty"`
 	Payload  string       `json:"payload,omitempty"`
 	Bytes    int          `json:"bytes,omitempty"`
@@ -52,6 +53,7 @@ type apiMessage struct {
 	Failed       map[string]string `json:"failed,omitempty"`
 	MTU          int               `json:"mtu,omitempty"`
 	Build        string            `json:"build,omitempty"`
+	Transport    string            `json:"transport,omitempty"`
 	Msgs         []historyMsg      `json:"msgs,omitempty"`
 	Oldest       uint64            `json:"oldest,omitempty"`
 	Latest       uint64            `json:"latest,omitempty"`
@@ -177,6 +179,7 @@ func (s *APIServer) dispatch(conn *apiConn, req apiMessage) {
 			DefaultPeers: s.node.DefaultPeers(),
 			MTU:          s.node.MTU(),
 			Build:        buildVersion,
+			Transport:    transportName,
 		})
 	case "send":
 		s.handleSend(conn, req)
@@ -323,6 +326,12 @@ func (s *APIServer) handleWatch(conn *apiConn, req apiMessage) {
 	if err := s.mail.Watch(ed25519.PublicKey(keyBytes)); err != nil {
 		s.replyReq(conn, req, apiMessage{Op: "error", Error: "watch failed: " + err.Error()})
 		return
+	}
+	if req.Addr != "" {
+		if err := s.mail.RememberAddr(ed25519.PublicKey(keyBytes), req.Addr); err != nil {
+			s.replyReq(conn, req, apiMessage{Op: "error", Error: "remember addr failed: " + err.Error()})
+			return
+		}
 	}
 	s.replyReq(conn, req, apiMessage{Op: "watching", To: req.To})
 }

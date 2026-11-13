@@ -53,4 +53,8 @@ type Transport interface {
 	PeerStatuses() []peerStatus
 	MTU() int
 	DefaultPeers() []string
+	// AddPeerAddr registers a buddy's dial address (tailcat) and admits its
+	// key to our server. The Yggdrasil transport ignores it (routing is by
+	// node key, so no address is needed).
+	AddPeerAddr(id PeerID, addr string)
 }

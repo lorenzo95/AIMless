@@ -188,7 +188,8 @@ func (m *Mail) Close() error {
 }
 
 type contactsFile struct {
-	Contacts []string `json:"contacts"`
+	Contacts []string          `json:"contacts"`
+	Addrs    map[string]string `json:"addrs,omitempty"`
 }
 
 func (m *Mail) contactsPath() string {
@@ -196,18 +197,67 @@ func (m *Mail) contactsPath() string {
 }
 
 func (m *Mail) loadContacts() ([]string, error) {
+	cf, err := m.loadContactsFile()
+	return cf.Contacts, err
+}
+
+func (m *Mail) loadContactsFile() (contactsFile, error) {
 	data, err := os.ReadFile(m.contactsPath())
 	if os.IsNotExist(err) {
-		return nil, nil
+		return contactsFile{}, nil
 	}
 	if err != nil {
-		return nil, err
+		return contactsFile{}, err
 	}
 	var cf contactsFile
 	if err := json.Unmarshal(data, &cf); err != nil {
-		return nil, fmt.Errorf("parse %s: %w", m.contactsPath(), err)
+		return contactsFile{}, fmt.Errorf("parse %s: %w", m.contactsPath(), err)
 	}
-	return cf.Contacts, nil
+	return cf, nil
+}
+
+func (m *Mail) persistContacts(cf contactsFile) error {
+	data, err := json.Marshal(cf)
+	if err != nil {
+		return err
+	}
+	tmp := m.contactsPath() + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, m.contactsPath())
+}
+
+// RememberAddr stores a buddy's dial address (tailcat) and registers it with the
+// transport so we can dial it and admit its connections. Persisted in
+// contacts.json so it survives a restart.
+func (m *Mail) RememberAddr(pub ed25519.PublicKey, addr string) error {
+	peerHex := hex.EncodeToString(pub)
+	cf, err := m.loadContactsFile()
+	if err != nil {
+		return err
+	}
+	if cf.Addrs == nil {
+		cf.Addrs = make(map[string]string)
+	}
+	cf.Addrs[peerHex] = addr
+	found := false
+	for _, c := range cf.Contacts {
+		if c == peerHex {
+			found = true
+			break
+		}
+	}
+	if !found {
+		cf.Contacts = append(cf.Contacts, peerHex)
+	}
+	if err := m.persistContacts(cf); err != nil {
+		return err
+	}
+	if n := m.nodeRef(); n != nil {
+		n.AddPeerAddr(pub, addr)
+	}
+	return nil
 }
 
 type blockedFile struct {
@@ -303,11 +353,11 @@ func (m *Mail) Watch(pub ed25519.PublicKey) error {
 	if _, err := m.boxFor(peerHex); err != nil {
 		return err
 	}
-	contacts, err := m.loadContacts()
+	cf, err := m.loadContactsFile()
 	if err != nil {
 		return err
 	}
-	for _, c := range contacts {
+	for _, c := range cf.Contacts {
 		if c == peerHex {
 			if p := m.presenceRef(); p != nil {
 				p.Watch(pub)
@@ -315,16 +365,8 @@ func (m *Mail) Watch(pub ed25519.PublicKey) error {
 			return nil
 		}
 	}
-	contacts = append(contacts, peerHex)
-	data, err := json.Marshal(contactsFile{Contacts: contacts})
-	if err != nil {
-		return err
-	}
-	tmp := m.contactsPath() + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		return err
-	}
-	if err := os.Rename(tmp, m.contactsPath()); err != nil {
+	cf.Contacts = append(cf.Contacts, peerHex)
+	if err := m.persistContacts(cf); err != nil {
 		return err
 	}
 	if p := m.presenceRef(); p != nil {
@@ -335,6 +377,15 @@ func (m *Mail) Watch(pub ed25519.PublicKey) error {
 
 func (m *Mail) Attach(node Transport) {
 	m.SetNode(node)
+	// Re-register persisted dial addresses (tailcat) so buddies are reachable
+	// after a restart. The Yggdrasil transport ignores these.
+	if cf, err := m.loadContactsFile(); err == nil {
+		for peerHex, addr := range cf.Addrs {
+			if b, err := hex.DecodeString(peerHex); err == nil && len(b) == ed25519.PublicKeySize {
+				node.AddPeerAddr(ed25519.PublicKey(b), addr)
+			}
+		}
+	}
 	go m.retryLoop()
 }
 
