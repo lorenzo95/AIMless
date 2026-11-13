@@ -240,7 +240,8 @@ AIMLESS_DAEMON_BIN=$PWD/aimlessd-tailcat-linux-amd64 AIMLESS_HOME=~/.local/share
 Both peers must run tailcat and exchange **v2 invites** (`aimless2:...`, which carry
 the dial address). Pick your **relay region** once before sharing invites (the
 "Relay …" menu item): it is baked into your address, so changing it later means
-buddies need your new invite. The default public DERP relays work out of the box;
+buddies need your new invite. Saving applies right away by restarting the daemon.
+The default public DERP relays work out of the box;
 to run your own relay (no rate limits), use the same relay panel or the `relay`
 block in the daemon's `config.json`. Full details: **[docs/tailcat.md](docs/tailcat.md)**.
 

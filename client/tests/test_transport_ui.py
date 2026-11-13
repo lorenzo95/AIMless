@@ -51,3 +51,89 @@ def test_relay_tooltip_shows_region_not_long_address():
     assert long not in tip  # the long address belongs in the invite, not the hover
     # No region known yet -> still no long address.
     assert long not in gtkui.relay_tooltip({"address": long})
+
+
+class _FakeSupervisor:
+    def __init__(self, external=False, status=None, running=True):
+        self.external = external
+        self.sock = "/tmp/fake.sock"
+        self._status = status
+        self._running = running
+
+    def status(self):
+        return self._status
+
+    def is_running(self):
+        return self._running
+
+
+def _patch_relay_io(monkeypatch, reply):
+    """Stub DaemonClient + restart_daemon; record what apply_relay does."""
+    rec = {"setrelay": [], "restart": 0}
+
+    class _DC:
+        def __init__(self, sock):
+            pass
+
+        def request(self, op, timeout=None, **fields):
+            rec["setrelay"].append((op, fields))
+            return reply
+
+        def close(self):
+            pass
+
+    def _restart(supervisor, log=None):
+        rec["restart"] += 1
+
+    monkeypatch.setattr(gtkui, "DaemonClient", _DC)
+    monkeypatch.setattr(gtkui, "restart_daemon", _restart)
+    return rec
+
+
+def test_apply_relay_local_restarts_and_reports_region(monkeypatch):
+    new = {"address": "tcNEW", "region": {"id": 21, "name": "Toronto", "code": "tor"},
+           "relay": {"region_id": 21}}
+    sup = _FakeSupervisor(external=False, status=new, running=True)
+    rec = _patch_relay_io(monkeypatch, {"op": "relay", "address": "tcOLD"})
+    msg, got = gtkui.apply_relay(sup, {"hostname": "", "region_id": 21}, {})
+    assert "Toronto" in msg
+    assert got is new                     # refreshed status (new address) returned
+    assert rec["restart"] == 1            # local daemon restarted to apply
+    assert rec["setrelay"][0][0] == "setrelay"
+    assert rec["setrelay"][0][1]["relay"] == {"hostname": "", "region_id": 21}
+
+
+def test_apply_relay_noop_skips_restart(monkeypatch):
+    sup = _FakeSupervisor(external=False, status={}, running=True)
+    rec = _patch_relay_io(monkeypatch, {"op": "relay", "address": "tcOLD"})
+    msg, got = gtkui.apply_relay(sup, {"hostname": "", "region_id": 21}, {"region_id": 21})
+    assert msg == "No change."
+    assert got is None
+    assert rec["restart"] == 0            # don't drop connections for a no-op save
+
+
+def test_apply_relay_remote_does_not_restart(monkeypatch):
+    sup = _FakeSupervisor(external=True, status={}, running=True)
+    rec = _patch_relay_io(monkeypatch, {"op": "relay", "address": "tcOLD"})
+    msg, got = gtkui.apply_relay(sup, {"hostname": "", "region_id": 21}, {})
+    assert "remote daemon" in msg
+    assert got is None
+    assert rec["restart"] == 0            # client can't restart a remote daemon
+
+
+def test_apply_relay_error_reply(monkeypatch):
+    sup = _FakeSupervisor(external=False, status={}, running=True)
+    rec = _patch_relay_io(monkeypatch, {"op": "error", "error": "boom"})
+    msg, got = gtkui.apply_relay(sup, {"region_id": 21}, {})
+    assert msg.startswith("error:") and "boom" in msg
+    assert got is None
+    assert rec["restart"] == 0
+
+
+def test_apply_relay_restart_failed(monkeypatch):
+    sup = _FakeSupervisor(external=False, status=None, running=False)
+    rec = _patch_relay_io(monkeypatch, {"op": "relay", "address": "tcOLD"})
+    msg, got = gtkui.apply_relay(sup, {"region_id": 21}, {})
+    assert "did not restart" in msg
+    assert got is None
+    assert rec["restart"] == 1

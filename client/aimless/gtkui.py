@@ -3885,6 +3885,36 @@ def restart_daemon(supervisor, log=None):
         time.sleep(0.1)
 
 
+def apply_relay(supervisor, cfg, relay, log=None):
+    """Persist a relay config (setrelay) and apply it. Returns (message, new_status);
+    new_status is the refreshed supervisor status only when the local daemon was
+    restarted, else None. A remote (tunnel) daemon is not restarted here - the
+    client only owns the local process, so the remote one must be restarted by hand.
+    """
+    d = DaemonClient(supervisor.sock)
+    try:
+        r = d.request("setrelay", relay=cfg, timeout=10)
+    finally:
+        d.close()
+    if r.get("op") != "relay":
+        return f"error: {r.get('error', 'unknown')}", None
+    unchanged = (
+        cfg.get("hostname", "") == (relay.get("hostname") or "")
+        and cfg.get("region_id", 0) == (relay.get("region_id") or 0)
+    )
+    if unchanged:
+        return "No change.", None
+    if supervisor.external:
+        return "Saved. Restart the remote daemon to apply.", None
+    restart_daemon(supervisor, log)
+    new = supervisor.status()
+    if new is None or not supervisor.is_running():
+        return "Saved, but the daemon did not restart. Quit AIMless and reopen.", None
+    cur = new.get("region") or {}
+    name = cur.get("name") or cur.get("code") or f"region {cur.get('id', '?')}"
+    return f"Applied - you are now on {name}.", new
+
+
 def ask_text(parent, title, label):
     dlg = Gtk.Dialog(title=title, transient_for=parent, modal=True)
     dlg.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "OK", Gtk.ResponseType.OK)
@@ -4622,10 +4652,15 @@ class AimlessApp:
         addr_entry.set_editable(False)
         box.pack_start(addr_entry, False, False, 0)
 
+        apply_note = (
+            "Saving stores the change; restart the remote daemon to apply."
+            if self.supervisor.external else
+            "Saving applies the change by restarting the daemon."
+        )
         note = Gtk.Label(label=(
             "Your region is part of your address, so pick it before sharing invites. "
             "Changing it later changes your address - buddies who added you will need "
-            "your new invite. Saved changes apply after AIMless restarts."))
+            "your new invite. " + apply_note))
         note.set_xalign(0)
         note.set_line_wrap(True)
         note.set_opacity(0.7)
@@ -4645,15 +4680,17 @@ class AimlessApp:
                 idx = region_combo.get_active()
                 if 0 <= idx < len(regions):
                     cfg["region_id"] = regions[idx].get("id", 0)
+            status.set_text("Applying …")
+            while Gtk.events_pending():
+                Gtk.main_iteration()
             try:
-                d = DaemonClient(self.supervisor.sock)
-                r = d.request("setrelay", relay=cfg, timeout=10)
-                d.close()
-                if r.get("op") == "relay":
-                    addr_entry.set_text(r.get("address", addr))
-                    status.set_text("Saved. Restart AIMless to apply.")
-                else:
-                    status.set_text(f"error: {r.get('error', 'unknown')}")
+                msg, new = apply_relay(self.supervisor, cfg, relay,
+                                       getattr(self, "log", None))
+                status.set_text(msg)
+                if new is not None:
+                    addr = new.get("address", addr)
+                    addr_entry.set_text(addr)
+                    relay = new.get("relay") or {}
             except Exception as e:
                 status.set_text(f"error: {e}")
         dlg.destroy()

@@ -118,7 +118,8 @@ relays accept tailcat connections too, so we default to the full map.)
 **Regions.** Your DERP region is part of your tailcat address, so pick it once
 before sharing invites. Choose it in the GUI relay panel (the "Relay …" menu
 item), which lists every region in the map and pre-selects the one you are on; or
-set `relay.region_id` in `config.json` (e.g. 21 = Toronto). It applies on daemon
+set `relay.region_id` in `config.json` (e.g. 21 = Toronto). Saving in the GUI
+applies right away by restarting the daemon; a hand-edited `config.json` needs a
 restart. The route bar shows your current region on hover. Verified: a node on
 the official Toronto relay (region 21) connects fine.
 
@@ -172,9 +173,9 @@ unaffected. Verified end-to-end over public DERP by
   (that would require re-keying conversations/rooms on the client E2E key).
 - Relay configuration is via the `setrelay` op, the `config.json` `relay` block
   (`region_id`, `hostname`, and/or `derpmap_url`), or the GUI relay panel (region
-  picker + self-hosted hostname). It applies on daemon restart - the relay is
-  embedded in the address, so a live change would change the address mid-session
-  and stale invites.
+  picker + self-hosted hostname). The relay is embedded in the address, so applying
+  a change needs a daemon restart: the GUI does this automatically for the local
+  daemon; a remote (tunnel) daemon must be restarted by hand.
 - The GUI is transport-aware (relay panel, relay-based tray/status, v2 invite
   add-buddy); `gtkui.py` is still a monolith and would benefit from extraction.
 - tailcat v0.7.0 makes no API/wire stability promises; the version is pinned.
