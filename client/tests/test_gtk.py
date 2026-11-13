@@ -2915,7 +2915,8 @@ def test_build_css_uses_palette_and_mono():
 
 def test_no_hardcoded_colors_outside_palette():
     import re
-    src = open(gtkui.__file__).read()
+    from aimless import theme
+    src = open(gtkui.__file__).read() + open(theme.__file__).read()
     in_source = re.findall(r"#[0-9a-fA-F]{6}", src)
     in_palette = re.findall(r"#[0-9a-fA-F]{6}", repr(gtkui.THEMES))
     assert len(in_source) == len(in_palette), (
