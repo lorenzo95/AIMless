@@ -107,17 +107,20 @@ and stales old invites.
 
 ## Relays (DERP)
 
-By default the daemon uses tailcat's free, rate-limited public DERP relays
-(`https://tailcat.dev/derpmap.json`). They are best-effort — no SLA, and access
-can be revoked. Text is tiny and sails through; large files are slow when the
-path stays relayed. When hole-punching succeeds the relay leaves the data path
-entirely.
+By default the daemon uses the full official Tailscale DERP map
+(`https://login.tailscale.com/derpmap/default`, ~28 regions). These are free,
+best-effort relays - no SLA, and access can be revoked. Text is tiny and sails
+through; large files are slow when the path stays relayed. When hole-punching
+succeeds the relay leaves the data path entirely. (tailcat's own
+`https://tailcat.dev/derpmap.json` default is only a 4-region subset; the official
+relays accept tailcat connections too, so we default to the full map.)
 
-**Regions.** The default `tailcat.dev` map is a small subset (4 regions). tailcat
-also works with the full official Tailscale DERP map
-(`https://login.tailscale.com/derpmap/default`, ~28 regions including Toronto) -
-point `derpmap_url` at it. Verified: a node on the official Toronto relay (region
-21) connects fine.
+**Regions.** Your DERP region is part of your tailcat address, so pick it once
+before sharing invites. Choose it in the GUI relay panel (the "Relay …" menu
+item), which lists every region in the map and pre-selects the one you are on; or
+set `relay.region_id` in `config.json` (e.g. 21 = Toronto). It applies on daemon
+restart. The route bar shows your current region on hover. Verified: a node on
+the official Toronto relay (region 21) connects fine.
 
 Two region facts worth knowing:
 - You and a buddy can be on *different* regions and it works: each invite embeds
@@ -168,9 +171,10 @@ unaffected. Verified end-to-end over public DERP by
 - No runtime transport toggle, no dual-homing, no per-contact delivery switching
   (that would require re-keying conversations/rooms on the client E2E key).
 - Relay configuration is via the `setrelay` op, the `config.json` `relay` block
-  (`hostname` and/or `derpmap_url`), or the GUI relay panel. It applies on daemon
-  restart — the relay is embedded in the address, so a live change would change
-  the address mid-session and stale invites.
+  (`region_id`, `hostname`, and/or `derpmap_url`), or the GUI relay panel (region
+  picker + self-hosted hostname). It applies on daemon restart - the relay is
+  embedded in the address, so a live change would change the address mid-session
+  and stale invites.
 - The GUI is transport-aware (relay panel, relay-based tray/status, v2 invite
   add-buddy); `gtkui.py` is still a monolith and would benefit from extraction.
 - tailcat v0.7.0 makes no API/wire stability promises; the version is pinned.
