@@ -3006,8 +3006,9 @@ def test_sound_env_override(monkeypatch):
 
 
 def test_play_sound_throttle(gtk_app, monkeypatch):
+    from aimless import notify
     played = []
-    monkeypatch.setattr(gtkui, "_run_beep", lambda cmd: played.append(cmd))
+    monkeypatch.setattr(notify, "_run_beep", lambda cmd: played.append(cmd))
     gtkui._LAST_SOUND[0] = 0.0
     gtkui.play_notification_sound("single")
     gtkui.play_notification_sound("single")
