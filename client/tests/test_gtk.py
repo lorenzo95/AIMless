@@ -2900,7 +2900,7 @@ REQUIRED_PALETTE_KEYS = {
 
 
 def test_themes_have_all_keys():
-    assert set(gtkui.THEMES) == {"dark", "mocha", "nord", "tokyo", "latte", "dawn", "matrix", "amber"}
+    assert set(gtkui.THEMES) == {"dark", "mocha", "nord", "tokyo", "latte", "dawn", "matrix", "amber", "dracula"}
     for name, pal in gtkui.THEMES.items():
         missing = REQUIRED_PALETTE_KEYS - set(pal)
         assert not missing, f"{name} palette missing {missing}"

@@ -146,6 +146,23 @@ THEMES = {
         "online": "#ffb000", "away": "#ff8c00", "offline": "#5a4200",
         "danger": "#ff5544", "link": "#ffd27f",
     },
+    "dracula": {
+        "name": "Dracula", "mono": False,
+        "bg": "#282a36", "header": "#21222c", "surface": "#343746",
+        "sidebar": "#21222c", "sidebar_hover": "#343746", "sidebar_selected": "#44475a",
+        "button": "#44475a", "button_hover": "#4d5066", "button_active": "#565a75",
+        "border": "#44475a", "border_dark": "#191a21", "sep": "#343746",
+        "text": "#f8f8f2", "text2": "#f8f8f2", "text_bright": "#ffffff",
+        "muted": "#6272a4", "muted2": "#8892bf", "subtitle": "#6272a4",
+        "bubble_in": "#44475a", "bubble_in_fg": "#f8f8f2",
+        "bubble_out": "#bd93f9", "bubble_out_fg": "#282a36", "out_link": "#191a21",
+        "badge_bg": "#bd93f9", "badge_fg": "#282a36", "focus": "#6272a4",
+        "log_text": "#f8f8f2",
+        "away_bg": "#44475a", "away_border": "#ffb86c", "away_text": "#ffb86c",
+        "away_icon": "#ffb86c", "chip": "#44475a", "chip_hover": "#4d5066",
+        "online": "#50fa7b", "away": "#ffb86c", "offline": "#6272a4",
+        "danger": "#ff5555", "link": "#8be9fd",
+    },
 }
 
 THEME_ENTRIES = [
@@ -158,6 +175,7 @@ THEME_ENTRIES = [
     ("dawn", "Dawn", "Rosé Pine · light"),
     ("matrix", "Matrix", "Hacker green · monospace"),
     ("amber", "Amber CRT", "Phosphor amber · monospace"),
+    ("dracula", "Dracula", "Vampire dark · purple"),
 ]
 
 

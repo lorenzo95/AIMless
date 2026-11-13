@@ -2389,7 +2389,7 @@ class ContactsView(Gtk.Box):
         add_frame = Gtk.Frame(label="Add a buddy - paste their invite")
         add_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         add_box.set_border_width(10)
-        self.add_invite_entry = Gtk.Entry(placeholder_text="aimless1:<client-pk>:<node-pk>:<screen>")
+        self.add_invite_entry = Gtk.Entry(placeholder_text="paste a buddy's invite (aimless1 / aimless2)")
         add_box.pack_start(self.add_invite_entry, False, False, 0)
         pet_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         self.add_petname_entry = Gtk.Entry(placeholder_text="Petname (optional)")
@@ -3258,7 +3258,7 @@ class AimlessWindow(Gtk.Window):
             return inner
 
         # --- Yggdrasil node key ---
-        node = section("Yggdrasil node key - your address")
+        node = section("tailcat address" if is_tailcat(st) else "Yggdrasil node key - your address")
         node_status = Gtk.Label(label=f"current: {st.get('address', '?')}")
         node_status.set_xalign(0.0)
         node_status.set_line_wrap(True)
@@ -3328,6 +3328,18 @@ class AimlessWindow(Gtk.Window):
             b.connect("clicked", cb)
             nbtn.pack_start(b, False, False, 0)
         node.pack_start(nbtn, False, False, 0)
+        if is_tailcat(st):
+            # The Yggdrasil node-key controls do not apply to tailcat (the daemon
+            # manages the WireGuard key); show the address and a note instead.
+            for w in (node_entry, node_preview, nbtn):
+                w.set_no_show_all(True)
+                w.hide()
+            tc_note = Gtk.Label(label="The tailcat node key is managed by the daemon; your address "
+                                      "is shared through your invite. Change relays in the relay panel.")
+            tc_note.set_xalign(0.0)
+            tc_note.set_line_wrap(True)
+            tc_note.get_style_context().add_class("muted")
+            node.pack_start(tc_note, False, False, 0)
 
         # --- client identity ---
         ident = section("Client identity - your encryption key")
@@ -5324,7 +5336,7 @@ def install_desktop_entry():
         "Type=Application\n"
         "Name=AIMless\n"
         "GenericName=Instant Messenger\n"
-        "Comment=Serverless instant messaging over the Yggdrasil overlay network\n"
+        "Comment=Serverless, end-to-end-encrypted instant messaging\n"
         f"Exec={exec_line}\n"
         f"Icon={appicon.ICON_NAME}\n"
         "Terminal=false\n"
