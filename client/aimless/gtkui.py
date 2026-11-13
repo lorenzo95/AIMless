@@ -1016,6 +1016,7 @@ class DaemonSupervisor:
                 "default_peers": st.get("default_peers") or [],
                 "build": st.get("build", ""),
                 "mtu": st.get("mtu", 0),
+                "transport": st.get("transport", "yggdrasil"),
             }
         except Exception:
             return None
@@ -1175,15 +1176,41 @@ class Session:
 _presence_state = presence_state
 
 
+def is_tailcat(st):
+    """True when the daemon runs the tailcat transport (vs Yggdrasil)."""
+    return bool(st) and st.get("transport") == "tailcat"
+
+
+def net_label(st):
+    """Short network label for the status/route bars. Yggdrasil counts peers;
+    tailcat has a single DERP relay, so it reports the relay state."""
+    if not st:
+        return "peers 0/0"
+    if is_tailcat(st):
+        return "relay up" if st.get("peers_up", 0) > 0 else "relay down"
+    return f"peers {st.get('peers_up', 0)}/{st.get('peers_total', 0)}"
+
+
+def short_address(addr, n=28):
+    """A tailcat address is ~217 chars; show a readable prefix. The full value
+    lives in the tooltip and the invite."""
+    if not addr:
+        return ""
+    return addr if len(addr) <= n else addr[:n] + "…"
+
+
 def _self_state(st):
     """(colour, text) for how our own node is doing.
 
     One place, because the route bar and the activity line used to colour the
-    same state differently - the activity line said green "you are online"
-    while the bar next to it said amber "at risk - one peer left".
+    same state differently. Yggdrasil counts peers; tailcat reports its relay.
     """
     up = st.get("peers_up", 0)
     total = st.get("peers_total", 0)
+    if is_tailcat(st):
+        if up <= 0:
+            return C["away"], "connecting - relay not reachable yet"
+        return C["online"], "online"
     if up <= 0:
         return C["away"], "connecting - no Yggdrasil peers yet"
     if up == 1 and total > 1:
@@ -3067,15 +3094,17 @@ class ContactsView(Gtk.Box):
         except ValueError as e:
             self.add_status.set_text(f"error: {e}")
             return
+        addr = protocol.invite_addr(invite)
         if client_hex == self.app.session.pubkey_hex:
             self.add_status.set_text("error: that's your own invite - send it to a friend")
             return
         contacts = self.app.session.contacts()
         for k, c in contacts.items():
             if c.get("pubkey") == client_hex:
-                if c.get("node") != node_hex:
+                if c.get("node") != node_hex or c.get("addr", "") != addr:
                     allc = protocol.load_contacts(contacts_path())
                     allc[k]["node"] = node_hex
+                    allc[k]["addr"] = addr
                     protocol.save_contacts(contacts_path(), allc)
                     self.add_status.set_text(f"updated routing key for {k}")
                     self.app.messages.sync_sidebar()
@@ -3083,7 +3112,7 @@ class ContactsView(Gtk.Box):
                 self.add_status.set_text(f"already known as {k}")
                 return
         allc = protocol.load_contacts(contacts_path())
-        allc[petname or screen] = {"pubkey": client_hex, "node": node_hex, "screen": screen}
+        allc[petname or screen] = {"pubkey": client_hex, "node": node_hex, "screen": screen, "addr": addr}
         protocol.save_contacts(contacts_path(), allc)
 
         def add_worker():
@@ -3091,7 +3120,7 @@ class ContactsView(Gtk.Box):
                 self.app.session.client.unblock(node_hex)
             except DaemonError:
                 pass
-            return self.app.session.client.add_contact(node_hex)
+            return self.app.session.client.add_contact(node_hex, addr)
 
         run_async(add_worker)
         self.add_invite_entry.set_text("")
@@ -3203,7 +3232,7 @@ class ActivityView(Gtk.Box):
         colour, text = _self_state(st)
         state = f"<span foreground='{colour}'>●  {text}</span>"
         self.info_label.set_markup(
-            f"{state}  -  address <b>{st['address']}</b>  ·  peers {st['peers_up']}/{st['peers_total']}\n"
+            f"{state}  -  address <b>{short_address(st['address'])}</b>  ·  {net_label(st)}\n"
             f"daemon: {build}  ·  client: aimless/{client_version}{version_note}{tnote}")
 
     def log(self, line):
@@ -3682,15 +3711,15 @@ class AimlessWindow(Gtk.Window):
             if tunnel is not None:
                 tail = f"  ·  ↗ {GLib.markup_escape_text(tunnel['host'])}"
                 self.route_label.set_tooltip_text(self._tunnel_tooltip(tunnel))
-            elif st.get("peers_up", 0) == 1 and st.get("peers_total", 0) > 1:
+            elif not is_tailcat(st) and st.get("peers_up", 0) == 1 and st.get("peers_total", 0) > 1:
                 self.route_label.set_tooltip_text(
                     "only one Yggdrasil peer is up - if it drops, AIMless cannot be reached")
             else:
-                self.route_label.set_tooltip_text(None)
+                self.route_label.set_tooltip_text(st.get("address") or None)
             colour, text = _self_state(st)
             self.route_label.set_markup(
-                f"<span foreground='{colour}'>●  {text}</span>  -  {st['address']}  ·  "
-                f"peers {st['peers_up']}/{st['peers_total']}{tail}")
+                f"<span foreground='{colour}'>●  {text}</span>  -  {short_address(st['address'])}  ·  "
+                f"{net_label(st)}{tail}")
             if st.get("peers_up", 0) > 0:
                 self._set_route_icon(first_icon(
                     "network-wireless-signal-excellent-symbolic", "applications-internet"))
@@ -5222,12 +5251,15 @@ class AimlessApp:
         return True
 
     def show_peers(self, parent=None):
-        """The peer manager: the list, each peer's state, and the link to the
-        public peer list."""
+        """The network manager: Yggdrasil shows the editable peer list; tailcat
+        shows the relay panel (the relay is baked into the address)."""
         st = self.supervisor.status()
         if st is None:
-            _error_dialog(parent, "The daemon is not answering, so its peer list "
-                                  "is unknown. Start it and try again.")
+            _error_dialog(parent, "The daemon is not answering, so its network "
+                                  "state is unknown. Start it and try again.")
+            return
+        if is_tailcat(st):
+            self._relay_dialog(parent, st)
             return
         current = st.get("peer_list") or []
         details = st.get("peer_details") or []
@@ -5239,17 +5271,15 @@ class AimlessApp:
             self._apply_peer_list(peers)
 
     def _first_run_peers(self):
-        """The peers step of the setup wizard.
-
-        The daemon already falls back to the built-in list, so this step is
-        about adding one of your own - and about showing where the public
-        list lives, because that is the first thing people look for.
-        """
+        """The network step of the setup wizard. Yggdrasil: the built-in peer
+        list works out of the box, so this is about adding your own. tailcat:
+        the public DERP relays work out of the box, so this is informational."""
         st = self.supervisor.status()
         if st is None:
-            # The daemon is not answering: we do not know its peer list, and an
-            # empty list would look like "no peers" rather than "no answer".
-            self.log("daemon not answering - skipping the peers step")
+            self.log("daemon not answering - skipping the network step")
+            return
+        if is_tailcat(st):
+            self._relay_dialog(None, st, first_run=True)
             return
         current = st.get("peer_list") or []
         peers = ask_peers(None, current, defaults=st.get("default_peers") or [])
@@ -5257,6 +5287,44 @@ class AimlessApp:
             return
         if peers != current:
             self._apply_peer_list(peers)
+
+    def _relay_dialog(self, parent, st, first_run=False):
+        """The tailcat relay panel. tailcat reaches each buddy directly when the
+        network allows and falls back to a DERP relay otherwise; the relay is
+        baked into the address, so there is no peer list to edit. Public relays
+        work out of the box."""
+        title = "AIMless - step 2 of 2: relay" if first_run else "AIMless - relay"
+        dlg = Gtk.Dialog(title=title, transient_for=parent, modal=True)
+        setup_app_icon(dlg)
+        dlg.add_button("Finish" if first_run else "Close", Gtk.ResponseType.OK)
+        dlg.set_default_size(560, -1)
+        box = dlg.get_content_area()
+        box.set_spacing(10)
+        box.set_border_width(14)
+        head = Gtk.Label(label="AIMless is using the tailcat transport.")
+        head.set_xalign(0)
+        box.pack_start(head, False, False, 0)
+        info = Gtk.Label(label=(
+            "tailcat connects you directly to each buddy when the network allows, "
+            "and falls back to a DERP relay when it does not. The default public "
+            "relays work out of the box - there is nothing to configure.\n\n"
+            "To run your own relay (no rate limits), run derper on a host with a "
+            "TLS certificate and point the daemon at it. See docs/tailcat.md."))
+        info.set_xalign(0)
+        info.set_line_wrap(True)
+        box.pack_start(info, False, False, 0)
+        addr = st.get("address", "")
+        if addr:
+            al = Gtk.Label(label="Your tailcat address (share it as an invite):")
+            al.set_xalign(0)
+            box.pack_start(al, False, False, 0)
+            entry = Gtk.Entry()
+            entry.set_text(addr)
+            entry.set_editable(False)
+            box.pack_start(entry, False, False, 0)
+        dlg.show_all()
+        dlg.run()
+        dlg.destroy()
 
     def open_window(self):
         if getattr(self, "_awaiting_connect", False):
@@ -5522,7 +5590,7 @@ class AimlessApp:
         if not self._link_ok:
             return self._link_reason or "the daemon is not answering"
         if self._island:
-            return self._island_reason or "the daemon has no Yggdrasil peers"
+            return self._island_reason or "the daemon cannot reach the network"
         return ""
 
     def _set_link(self, ok, reason=""):
@@ -5666,15 +5734,18 @@ class AimlessApp:
         if up > 0:
             self._cancel_island_timer()
             self._set_island(False)
-            self._set_peer_risk(up, peers)
+            self._set_peer_risk(up, peers, st)
             return
         # No peer is up - so the node cannot reach the overlay and the
         # buddies cannot reach us. With no peers configured at all there is
         # nothing to wait for either: the node is simply cut off, and the
         # tray has to say so (the window already says "connecting").
-        reason = ("no peers configured - AIMless cannot reach the network"
-                  if peers <= 0 else
-                  "no Yggdrasil peers - the daemon is on an island")
+        if is_tailcat(st):
+            reason = "relay not reachable - AIMless cannot be reached"
+        else:
+            reason = ("no peers configured - AIMless cannot reach the network"
+                      if peers <= 0 else
+                      "no Yggdrasil peers - the daemon is on an island")
         # Give the daemon a moment before crying wolf: a restart comes up
         # with no peers for a second or two.
         if force:
@@ -5683,7 +5754,7 @@ class AimlessApp:
             self._island_timer = GLib.timeout_add_seconds(ISLAND_GRACE_SECONDS,
                                                           self._island_grace_expired)
 
-    def _set_peer_risk(self, up, total):
+    def _set_peer_risk(self, up, total, st=None):
         """Say something when only one peer is left.
 
         Losing a few peers is not worth a warning: the node is still on the
@@ -5694,7 +5765,7 @@ class AimlessApp:
         A daemon that was asked for a single peer is not warned about: it has
         all the redundancy it asked for.
         """
-        at_risk = (up == 1 and total > 1)
+        at_risk = (not is_tailcat(st)) and (up == 1 and total > 1)
         reason = ("only one peer is up - if it drops, AIMless cannot be reached"
                   if at_risk else "")
         if at_risk == self._peer_risk:
