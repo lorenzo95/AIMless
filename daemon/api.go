@@ -64,6 +64,8 @@ type apiMessage struct {
 	Chunks          []attachEntry     `json:"chunks,omitempty"`
 	Tid             string            `json:"tid,omitempty"`
 	Relay           RelayConfig       `json:"relay,omitempty"`
+	Region          RegionInfo        `json:"region,omitempty"`
+	Regions         []RegionInfo      `json:"regions,omitempty"`
 	RestartRequired bool              `json:"restart_required,omitempty"`
 }
 
@@ -172,6 +174,7 @@ func (s *APIServer) dispatch(conn *apiConn, req apiMessage) {
 	case "whoami":
 		s.replyReq(conn, req, apiMessage{Op: "whoami", Address: s.node.Address(), Key: hex.EncodeToString(s.node.Pub()), Pid: os.Getpid()})
 	case "status":
+		region, regions := s.node.Regions()
 		s.replyReq(conn, req, apiMessage{
 			Op:           "status",
 			Address:      s.node.Address(),
@@ -183,6 +186,8 @@ func (s *APIServer) dispatch(conn *apiConn, req apiMessage) {
 			Build:        buildVersion,
 			Transport:    transportName,
 			Relay:        s.node.RelayConfig(),
+			Region:       region,
+			Regions:      regions,
 		})
 	case "send":
 		s.handleSend(conn, req)

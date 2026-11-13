@@ -457,6 +457,8 @@ class DaemonSupervisor:
                 "mtu": st.get("mtu", 0),
                 "transport": st.get("transport", "yggdrasil"),
                 "relay": st.get("relay") or {},
+                "region": st.get("region") or {},
+                "regions": st.get("regions") or [],
             }
         except Exception:
             return None
@@ -637,6 +639,15 @@ def short_address(addr, n=28):
     if not addr:
         return ""
     return addr if len(addr) <= n else addr[:n] + "…"
+
+
+def relay_tooltip(st):
+    """Hover text for the tailcat route bar: the relay region, not the long
+    address (which lives in the invite)."""
+    region = st.get("region") or {}
+    name = region.get("name") or region.get("code")
+    base = f"Relay region: {name}" if name else "tailcat relay"
+    return base + "\nYour full address is in your invite (Contacts -> Copy)."
 
 
 def _self_state(st):
@@ -2815,6 +2826,7 @@ class AimlessWindow(Gtk.Window):
         keys_item.connect("activate", self.on_keys)
         options_menu.append(keys_item)
         peers_item = Gtk.MenuItem(label="Peers …")
+        self.peers_item = peers_item
         peers_item.connect("activate", self.on_peers)
         options_menu.append(peers_item)
         prefs_item = Gtk.MenuItem(label="Preferences …")
@@ -3162,7 +3174,7 @@ class AimlessWindow(Gtk.Window):
                 self.route_label.set_tooltip_text(
                     "only one Yggdrasil peer is up - if it drops, AIMless cannot be reached")
             else:
-                self.route_label.set_tooltip_text(st.get("address") or None)
+                self.route_label.set_tooltip_text(relay_tooltip(st) if is_tailcat(st) else (st.get("address") or None))
             colour, text = _self_state(st)
             self.route_label.set_markup(
                 f"<span foreground='{colour}'>●  {text}</span>  -  {short_address(st['address'])}  ·  "
@@ -4549,14 +4561,14 @@ class AimlessApp:
             self._apply_peer_list(peers)
 
     def _relay_dialog(self, parent, st, first_run=False):
-        """The tailcat relay panel: shows the address and lets you point the
-        daemon at a self-hosted DERP relay. The relay is embedded in the address,
-        so changing it changes your address (applies after a restart)."""
+        """The tailcat relay panel: pick your DERP region (it becomes part of your
+        address), or point the daemon at a self-hosted relay. Pick the region
+        before sharing invites; changing it later means buddies need your new
+        invite."""
         title = "AIMless - step 2 of 2: relay" if first_run else "AIMless - relay"
         dlg = Gtk.Dialog(title=title, transient_for=parent, modal=True)
         setup_app_icon(dlg)
-        if not first_run:
-            dlg.add_button("Save", Gtk.ResponseType.APPLY)
+        dlg.add_button("Save", Gtk.ResponseType.APPLY)
         dlg.add_button("Finish" if first_run else "Close", Gtk.ResponseType.OK)
         dlg.set_default_size(560, -1)
         box = dlg.get_content_area()
@@ -4567,29 +4579,39 @@ class AimlessApp:
         box.pack_start(head, False, False, 0)
         info = Gtk.Label(label=(
             "tailcat connects you directly to each buddy when the network allows, "
-            "and falls back to a DERP relay when it does not. The default public "
-            "relays work out of the box.\n\n"
-            "To use your own relay (no rate limits), run derper on a host with a "
-            "TLS certificate and enter its hostname below. See docs/tailcat.md."))
+            "and falls back to a DERP relay when it does not. Pick the relay region "
+            "nearest you - it becomes part of your address."))
         info.set_xalign(0)
         info.set_line_wrap(True)
         box.pack_start(info, False, False, 0)
 
         relay = st.get("relay") or {}
-        hl = Gtk.Label(label="Self-hosted relay hostname (blank = public relays):")
+        regions = st.get("regions") or []
+        current = st.get("region") or {}
+
+        rl = Gtk.Label(label="Relay region (part of your address):")
+        rl.set_xalign(0)
+        box.pack_start(rl, False, False, 0)
+        region_combo = Gtk.ComboBoxText()
+        active = 0
+        for i, r in enumerate(regions):
+            region_combo.append_text(f"{r.get('name') or r.get('code', '')} ({r.get('code', '')})")
+            if r.get("id") == current.get("id"):
+                active = i
+        if regions:
+            region_combo.set_active(active)
+        else:
+            region_combo.append_text("(regions unavailable - daemon offline?)")
+            region_combo.set_active(0)
+        box.pack_start(region_combo, False, False, 0)
+
+        hl = Gtk.Label(label="...or a self-hosted relay hostname (overrides the region):")
         hl.set_xalign(0)
         box.pack_start(hl, False, False, 0)
         host_entry = Gtk.Entry()
         host_entry.set_text(relay.get("hostname", ""))
         host_entry.set_placeholder_text("derp.example.com")
         box.pack_start(host_entry, False, False, 0)
-        ml = Gtk.Label(label="DERP map URL (optional):")
-        ml.set_xalign(0)
-        box.pack_start(ml, False, False, 0)
-        map_entry = Gtk.Entry()
-        map_entry.set_text(relay.get("derpmap_url", ""))
-        map_entry.set_placeholder_text("https://tailcat.dev/derpmap.json")
-        box.pack_start(map_entry, False, False, 0)
 
         addr = st.get("address", "")
         al = Gtk.Label(label="Your tailcat address (share it as an invite):")
@@ -4601,8 +4623,9 @@ class AimlessApp:
         box.pack_start(addr_entry, False, False, 0)
 
         note = Gtk.Label(label=(
-            "Changing the relay changes your address, so buddies need your new "
-            "invite. Saved changes apply after AIMless restarts."))
+            "Your region is part of your address, so pick it before sharing invites. "
+            "Changing it later changes your address - buddies who added you will need "
+            "your new invite. Saved changes apply after AIMless restarts."))
         note.set_xalign(0)
         note.set_line_wrap(True)
         note.set_opacity(0.7)
@@ -4616,15 +4639,19 @@ class AimlessApp:
             resp = dlg.run()
             if resp != Gtk.ResponseType.APPLY:
                 break
-            cfg = {"hostname": host_entry.get_text().strip(),
-                   "derpmap_url": map_entry.get_text().strip()}
+            hostname = host_entry.get_text().strip()
+            cfg = {"hostname": hostname}
+            if not hostname and regions:
+                idx = region_combo.get_active()
+                if 0 <= idx < len(regions):
+                    cfg["region_id"] = regions[idx].get("id", 0)
             try:
                 d = DaemonClient(self.supervisor.sock)
                 r = d.request("setrelay", relay=cfg, timeout=10)
                 d.close()
                 if r.get("op") == "relay":
                     addr_entry.set_text(r.get("address", addr))
-                    status.set_text("Saved. Restart AIMless to apply the new relay.")
+                    status.set_text("Saved. Restart AIMless to apply.")
                 else:
                     status.set_text(f"error: {r.get('error', 'unknown')}")
             except Exception as e:
@@ -5034,6 +5061,8 @@ class AimlessApp:
             # The status request itself failed - the link check owns that
             # case, and guessing here would clear a real island.
             return
+        if getattr(self, "peers_item", None) is not None:
+            self.peers_item.set_label("Relay …" if is_tailcat(st) else "Peers …")
         peers = st.get("peers_total", 0)
         up = st.get("peers_up", 0)
         if up > 0:

@@ -16,6 +16,7 @@ RESPONSE_MAP = {
     "block": "blocked",
     "unblock": "unblocked",
     "setpeers": "peers",
+    "setrelay": "relay",
     "sendfile": "queued",
     "watch": "watching",
     "setstatus": "statusset",

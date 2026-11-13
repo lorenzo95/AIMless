@@ -82,3 +82,6 @@ func lastPeerError(p core.PeerInfo) string {
 func (y *YggNode) SetRelay(cfg RelayConfig) (string, error) { return y.Address(), nil }
 
 func (y *YggNode) RelayConfig() RelayConfig { return RelayConfig{} }
+
+// Regions is a no-op for Yggdrasil: it has no DERP regions.
+func (y *YggNode) Regions() (RegionInfo, []RegionInfo) { return RegionInfo{}, nil }

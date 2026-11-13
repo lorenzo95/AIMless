@@ -64,6 +64,9 @@ type Transport interface {
 	SetRelay(cfg RelayConfig) (string, error)
 	// RelayConfig is the persisted DERP relay configuration (tailcat).
 	RelayConfig() RelayConfig
+	// Regions reports the current DERP region and the available regions
+	// (tailcat). Yggdrasil returns zero values.
+	Regions() (current RegionInfo, available []RegionInfo)
 }
 
 // RelayConfig selects the DERP relay for the tailcat transport. Hostname is a
@@ -72,4 +75,12 @@ type Transport interface {
 type RelayConfig struct {
 	Hostname   string `json:"hostname,omitempty"`
 	DERPMapURL string `json:"derpmap_url,omitempty"`
+	RegionID   int    `json:"region_id,omitempty"`
+}
+
+// RegionInfo describes one DERP region (for the region picker / status).
+type RegionInfo struct {
+	ID   int    `json:"id"`
+	Code string `json:"code"`
+	Name string `json:"name"`
 }

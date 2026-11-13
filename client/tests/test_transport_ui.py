@@ -41,3 +41,13 @@ def test_self_state_ygg_redundancy():
     # ...but a single relay is normal for tailcat (no false amber).
     _, text = gtkui._self_state({"transport": "tailcat", "peers_up": 1, "peers_total": 1})
     assert text == "online"
+
+
+def test_relay_tooltip_shows_region_not_long_address():
+    long = "tc" + "x" * 200
+    st = {"region": {"name": "Toronto", "code": "tor"}, "address": long}
+    tip = gtkui.relay_tooltip(st)
+    assert "Toronto" in tip
+    assert long not in tip  # the long address belongs in the invite, not the hover
+    # No region known yet -> still no long address.
+    assert long not in gtkui.relay_tooltip({"address": long})

@@ -12,6 +12,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -46,6 +47,11 @@ const tailcatPort = 1
 // tailcatDialTimeout bounds a dial to an offline peer (DERP is not a mailbox).
 const tailcatDialTimeout = 2 * time.Second
 
+// defaultDERPMapURL is the official Tailscale DERP map (~28 regions). The
+// tailcat.dev default is only a 4-region subset; the official relays accept
+// tailcat connections too, so we default to the full map.
+const defaultDERPMapURL = "https://login.tailscale.com/derpmap/default"
+
 // tailcatKeyset is the persisted identity: node key + pre-shared key + an
 // optional fixed DERP region. The address is stable across restarts only when
 // all three are restored together (the PSK is part of the address capability).
@@ -56,12 +62,15 @@ type tailcatKeyset struct {
 }
 
 type TailcatNode struct {
-	datadir string
-	priv    key.NodePrivate
-	psk     tailcat.PresharedKey
-	server  *tailcat.Server
-	logger  *aimlessLogger
-	relay   RelayConfig
+	datadir      string
+	priv         key.NodePrivate
+	psk          tailcat.PresharedKey
+	server       *tailcat.Server
+	logger       *aimlessLogger
+	relay        RelayConfig
+	derpMapURL   string
+	regionsCache []RegionInfo
+	regionByHost map[string]RegionInfo // DERP node hostname -> region (current-region lookup)
 
 	mu        sync.Mutex
 	addrs     map[string]string          // peer hex -> tailcat address (dial target)
@@ -101,9 +110,14 @@ func newTailcatNode(datadir string, region *tailcfg.DERPRegion, log *aimlessLogg
 	}
 	relay := loadRelayConfig(datadir)
 	derpMapURL := relay.DERPMapURL
+	if derpMapURL == "" {
+		derpMapURL = defaultDERPMapURL
+	}
+	regionID := relay.RegionID
 	if region == nil {
 		if r := regionForRelay(relay); r != nil {
-			region = r
+			region = r // self-hosted relay
+			regionID = 0
 		} else {
 			region = ks.Region
 		}
@@ -111,16 +125,17 @@ func newTailcatNode(datadir string, region *tailcfg.DERPRegion, log *aimlessLogg
 		derpMapURL = "" // injected region (tests): no DERP map fetch
 	}
 	t := &TailcatNode{
-		datadir: datadir,
-		priv:    priv,
-		psk:     psk,
-		logger:  log,
-		relay:   relay,
-		addrs:   make(map[string]string),
-		clients: make(map[string]*tailcat.Client),
-		conns:   make(map[string]net.Conn),
+		datadir:    datadir,
+		priv:       priv,
+		psk:        psk,
+		logger:     log,
+		relay:      relay,
+		derpMapURL: derpMapURL,
+		addrs:      make(map[string]string),
+		clients:    make(map[string]*tailcat.Client),
+		conns:      make(map[string]net.Conn),
 	}
-	if err := t.startServer(region, derpMapURL); err != nil {
+	if err := t.startServer(region, regionID, derpMapURL); err != nil {
 		return nil, err
 	}
 	return t, nil
@@ -128,12 +143,13 @@ func newTailcatNode(datadir string, region *tailcfg.DERPRegion, log *aimlessLogg
 
 // startServer creates and starts the tailcat.Server with the given relay. The
 // OnTCP handler closes over t, so it survives a server swap.
-func (t *TailcatNode) startServer(region *tailcfg.DERPRegion, derpMapURL string) error {
+func (t *TailcatNode) startServer(region *tailcfg.DERPRegion, regionID int, derpMapURL string) error {
 	logf := func(format string, args ...any) { t.logger.Printf(format, args...) }
 	t.server = &tailcat.Server{
 		Key:          t.priv,
 		PresharedKey: t.psk,
 		Region:       region,
+		RegionID:     tailcfg.DERPRegionID(regionID),
 		DERPMapURL:   derpMapURL,
 		Logf:         logf,
 		OnTCP: func(port uint16) func(net.Conn) {
@@ -518,7 +534,7 @@ func saveRelayConfig(datadir string, rc RelayConfig) error {
 	if err != nil {
 		return err
 	}
-	if rc.Hostname == "" && rc.DERPMapURL == "" {
+	if rc.Hostname == "" && rc.DERPMapURL == "" && rc.RegionID == 0 {
 		cfg.Relay = nil
 	} else {
 		cfg.Relay = &rc
@@ -542,4 +558,66 @@ func regionForRelay(cfg RelayConfig) *tailcfg.DERPRegion {
 		return nil
 	}
 	return reg
+}
+
+// Regions reports the current DERP region and the available regions from the
+// DERP map (fetched once and cached). The current region is identified by
+// matching the DERP node hostnames embedded in our address against the map:
+// tailcat zeroes the numeric region ID when encoding an address, so ParseAddr
+// returns a placeholder ID (index+1), not the real DERP region.
+func (t *TailcatNode) Regions() (RegionInfo, []RegionInfo) {
+	t.mu.Lock()
+	cached := t.regionsCache
+	byHost := t.regionByHost
+	url := t.derpMapURL
+	relayRegion := t.relay.RegionID
+	t.mu.Unlock()
+	if cached == nil && url != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		dm, err := tailcat.FetchDERPMap(ctx, tailcat.DERPMapURL(url))
+		cancel()
+		if err == nil {
+			byHost = make(map[string]RegionInfo)
+			for _, r := range dm.Regions {
+				ri := RegionInfo{ID: int(r.RegionID), Code: r.RegionCode, Name: r.RegionName}
+				cached = append(cached, ri)
+				for _, n := range r.Nodes {
+					if n.HostName != "" {
+						byHost[n.HostName] = ri
+					}
+				}
+			}
+			sort.Slice(cached, func(i, j int) bool { return cached[i].ID < cached[j].ID })
+			t.mu.Lock()
+			t.regionsCache = cached
+			t.regionByHost = byHost
+			t.mu.Unlock()
+		}
+	}
+	var current RegionInfo
+	if ci, err := tailcat.ParseAddr(t.server.TailcatAddr()); err == nil {
+		for _, r := range ci.Region {
+			for _, n := range r.Nodes {
+				if ri, ok := byHost[n.HostName]; ok {
+					current = ri
+					break
+				}
+			}
+			if current.ID != 0 {
+				break
+			}
+		}
+	}
+	// Fall back to the explicitly configured region when the map is unavailable
+	// (offline) or the address nodes aren't in the public map (self-hosted relay).
+	if current.ID == 0 && relayRegion != 0 {
+		current = RegionInfo{ID: relayRegion}
+		for _, r := range cached {
+			if r.ID == relayRegion {
+				current = r
+				break
+			}
+		}
+	}
+	return current, cached
 }
