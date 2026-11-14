@@ -653,7 +653,65 @@ def relay_tooltip(st):
     region = st.get("region") or {}
     name = region.get("name") or region.get("code")
     base = f"Relay region: {name}" if name else "tailcat relay"
+    nodes = region.get("nodes") or []
+    if nodes:
+        base += "\nRelay servers: " + ", ".join(nodes[:3])
+        if len(nodes) > 3:
+            base += f" (+{len(nodes) - 3} more)"
     return base + "\nYour full address is in your invite (Contacts -> Copy)."
+
+
+# Country labels for the official DERP regions so the picker can sort by country
+# and type-ahead jumps (c -> Canada, g -> Germany). Unknown/custom regions fall
+# back to their own name.
+REGION_COUNTRY = {
+    "nyc": "United States", "sfo": "United States", "dfw": "United States",
+    "sea": "United States", "ord": "United States", "den": "United States",
+    "mia": "United States", "lax": "United States", "hnl": "United States",
+    "iad": "United States",
+    "tor": "Canada", "sao": "Brazil", "lhr": "United Kingdom", "fra": "Germany",
+    "nue": "Germany", "par": "France", "mad": "Spain", "ams": "Netherlands",
+    "waw": "Poland", "hel": "Finland", "sin": "Singapore", "tok": "Japan",
+    "hkg": "Hong Kong", "bom": "India", "syd": "Australia", "jnb": "South Africa",
+    "nai": "Kenya", "dbi": "United Arab Emirates",
+}
+
+
+def region_label(r):
+    name = r.get("name") or r.get("code", "")
+    code = r.get("code", "")
+    country = REGION_COUNTRY.get(code)
+    if country:
+        return f"{country} - {name} ({code})"
+    return f"{name} ({code})"
+
+
+def make_region_list(regions, current_id):
+    """A scrollable, country-sorted region list with type-ahead search. Returns
+    (scrolled_window, treeview)."""
+    ordered = sorted(regions, key=lambda r: region_label(r).lower())
+    store = Gtk.ListStore(str, int)  # label, region id
+    for r in ordered:
+        store.append([region_label(r), r.get("id", 0)])
+    view = Gtk.TreeView(model=store)
+    view.set_headers_visible(False)
+    view.set_enable_search(True)
+    view.set_search_column(0)
+    view.append_column(Gtk.TreeViewColumn("Region", Gtk.CellRendererText(), text=0))
+    if ordered:
+        sel = view.get_selection()
+        for i, r in enumerate(ordered):
+            if r.get("id") == current_id:
+                it = store.iter_nth_child(None, i)
+                sel.select_iter(it)
+                view.scroll_to_cell(store.get_path(it), None, False, 0, 0)
+                break
+    scroll = Gtk.ScrolledWindow()
+    scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+    scroll.set_min_content_height(180)
+    scroll.set_shadow_type(Gtk.ShadowType.IN)
+    scroll.add(view)
+    return scroll, view
 
 
 def _self_state(st):
@@ -4747,18 +4805,14 @@ class AimlessApp:
         rl = Gtk.Label(label="Relay region (part of your address):")
         rl.set_xalign(0)
         box.pack_start(rl, False, False, 0)
-        region_combo = Gtk.ComboBoxText()
-        active = 0
-        for i, r in enumerate(regions):
-            region_combo.append_text(f"{r.get('name') or r.get('code', '')} ({r.get('code', '')})")
-            if r.get("id") == current.get("id"):
-                active = i
         if regions:
-            region_combo.set_active(active)
+            region_scroll, region_view = make_region_list(regions, current.get("id"))
+            box.pack_start(region_scroll, False, False, 0)
         else:
-            region_combo.append_text("(regions unavailable - daemon offline?)")
-            region_combo.set_active(0)
-        box.pack_start(region_combo, False, False, 0)
+            region_view = None
+            unavail = Gtk.Label(label="(regions unavailable - daemon offline?)")
+            unavail.set_xalign(0)
+            box.pack_start(unavail, False, False, 0)
 
         hl = Gtk.Label(label="...or a self-hosted relay hostname (overrides the region):")
         hl.set_xalign(0)
@@ -4767,6 +4821,14 @@ class AimlessApp:
         host_entry.set_text(relay.get("hostname", ""))
         host_entry.set_placeholder_text("derp.example.com")
         box.pack_start(host_entry, False, False, 0)
+
+        ml = Gtk.Label(label="DERP map URL (advanced - blank = default public map):")
+        ml.set_xalign(0)
+        box.pack_start(ml, False, False, 0)
+        map_entry = Gtk.Entry()
+        map_entry.set_text(relay.get("derpmap_url", ""))
+        map_entry.set_placeholder_text("https://login.tailscale.com/derpmap/default")
+        box.pack_start(map_entry, False, False, 0)
 
         addr = st.get("address", "")
         al = Gtk.Label(label="Your tailcat address (share it as an invite):")
@@ -4801,10 +4863,13 @@ class AimlessApp:
                 break
             hostname = host_entry.get_text().strip()
             cfg = {"hostname": hostname}
-            if not hostname and regions:
-                idx = region_combo.get_active()
-                if 0 <= idx < len(regions):
-                    cfg["region_id"] = regions[idx].get("id", 0)
+            map_url = map_entry.get_text().strip()
+            if map_url:
+                cfg["derpmap_url"] = map_url
+            if not hostname and region_view is not None:
+                model, it = region_view.get_selection().get_selected()
+                if it is not None:
+                    cfg["region_id"] = model.get_value(it, 1)
             save_btn.set_sensitive(False)
             close_btn.set_sensitive(False)
             status.set_text("Saving …" if self.supervisor.external

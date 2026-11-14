@@ -56,6 +56,10 @@ const defaultDERPMapURL = "https://login.tailscale.com/derpmap/default"
 // deliberately outside the public ranges (official 1-28, tailcat.dev 301-304).
 const selfHostedRegionID tailcfg.DERPRegionID = 900
 
+// regionCacheTTL is how long the DERP region list is cached before a refresh,
+// so the picker stays current without a fetch on every open.
+const regionCacheTTL = time.Hour
+
 // tailcatKeyset is the persisted identity: node key + pre-shared key + an
 // optional fixed DERP region. The address is stable across restarts only when
 // all three are restored together (the PSK is part of the address capability).
@@ -66,15 +70,16 @@ type tailcatKeyset struct {
 }
 
 type TailcatNode struct {
-	datadir      string
-	priv         key.NodePrivate
-	psk          tailcat.PresharedKey
-	server       *tailcat.Server
-	logger       *aimlessLogger
-	relay        RelayConfig
-	derpMapURL   string
-	regionsCache []RegionInfo
-	regionByHost map[string]RegionInfo // DERP node hostname -> region (current-region lookup)
+	datadir        string
+	priv           key.NodePrivate
+	psk            tailcat.PresharedKey
+	server         *tailcat.Server
+	logger         *aimlessLogger
+	relay          RelayConfig
+	derpMapURL     string
+	regionsCache   []RegionInfo
+	regionByHost   map[string]RegionInfo // DERP node hostname -> region (current-region lookup)
+	regionsCacheAt time.Time
 
 	mu        sync.Mutex
 	addrs     map[string]string          // peer hex -> tailcat address (dial target)
@@ -622,12 +627,13 @@ func regionForRelay(cfg RelayConfig) *tailcfg.DERPRegion {
 func (t *TailcatNode) Regions() (RegionInfo, []RegionInfo) {
 	t.mu.Lock()
 	cached := t.regionsCache
+	cacheAt := t.regionsCacheAt
 	byHost := t.regionByHost
 	url := t.derpMapURL
 	relayRegion := t.relay.RegionID
 	hostname := t.relay.Hostname
 	t.mu.Unlock()
-	if cached == nil && url != "" {
+	if (cached == nil || time.Since(cacheAt) > regionCacheTTL) && url != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		dm, err := tailcat.FetchDERPMap(ctx, tailcat.DERPMapURL(url))
 		cancel()
@@ -635,23 +641,33 @@ func (t *TailcatNode) Regions() (RegionInfo, []RegionInfo) {
 			byHost = make(map[string]RegionInfo)
 			for _, r := range dm.Regions {
 				ri := RegionInfo{ID: int(r.RegionID), Code: r.RegionCode, Name: r.RegionName}
-				cached = append(cached, ri)
 				for _, n := range r.Nodes {
 					if n.HostName != "" {
-						byHost[n.HostName] = ri
+						ri.Nodes = append(ri.Nodes, n.HostName)
 					}
+				}
+				cached = append(cached, ri)
+				for _, h := range ri.Nodes {
+					byHost[h] = ri
 				}
 			}
 			sort.Slice(cached, func(i, j int) bool { return cached[i].ID < cached[j].ID })
 			t.mu.Lock()
 			t.regionsCache = cached
 			t.regionByHost = byHost
+			t.regionsCacheAt = time.Now()
 			t.mu.Unlock()
 		}
 	}
 	if hostname != "" {
 		// Self-hosted relay: not in the public map; report it directly.
-		return RegionInfo{ID: int(selfHostedRegionID), Code: "custom", Name: "Self-hosted relay"}, cached
+		var nodes []string
+		for _, h := range strings.Split(hostname, ",") {
+			if h = strings.TrimSpace(h); h != "" {
+				nodes = append(nodes, h)
+			}
+		}
+		return RegionInfo{ID: int(selfHostedRegionID), Code: "custom", Name: "Self-hosted relay", Nodes: nodes}, cached
 	}
 	var current RegionInfo
 	if ci, err := tailcat.ParseAddr(t.server.TailcatAddr()); err == nil {

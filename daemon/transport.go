@@ -80,7 +80,8 @@ type RelayConfig struct {
 
 // RegionInfo describes one DERP region (for the region picker / status).
 type RegionInfo struct {
-	ID   int    `json:"id"`
-	Code string `json:"code"`
-	Name string `json:"name"`
+	ID    int      `json:"id"`
+	Code  string   `json:"code"`
+	Name  string   `json:"name"`
+	Nodes []string `json:"nodes,omitempty"`
 }

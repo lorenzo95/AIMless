@@ -236,3 +236,36 @@ def test_write_tailcat_key_and_relay_restore(tmp_path):
     gtkui._write_relay_config(str(tmp_path), {"region_id": 21})
     cfg = json.loads((tmp_path / "config.json").read_text())
     assert cfg["relay"] == {"region_id": 21} and cfg["peers"] == ["p"]
+
+
+def test_region_label_country_and_fallback():
+    assert gtkui.region_label({"name": "Toronto", "code": "tor"}) == "Canada - Toronto (tor)"
+    assert gtkui.region_label({"name": "Frankfurt", "code": "fra"}) == "Germany - Frankfurt (fra)"
+    assert gtkui.region_label({"name": "Nuremberg", "code": "nue"}) == "Germany - Nuremberg (nue)"
+    # Unknown/custom region falls back to its own name.
+    assert gtkui.region_label({"name": "My Relay", "code": "xyz"}) == "My Relay (xyz)"
+
+
+def test_relay_tooltip_shows_region_and_servers():
+    st = {"region": {"name": "Toronto", "code": "tor",
+                     "nodes": ["derp21b.tailscale.com", "derp21c.tailscale.com"]}}
+    tip = gtkui.relay_tooltip(st)
+    assert "Toronto" in tip
+    assert "derp21b.tailscale.com" in tip
+    # Many nodes are truncated with a count.
+    st["region"]["nodes"] = [f"derp{i}.example.com" for i in range(6)]
+    assert "+3 more" in gtkui.relay_tooltip(st)
+
+
+def test_make_region_list_sorts_and_preselects():
+    regions = [{"id": 4, "code": "fra", "name": "Frankfurt"},
+               {"id": 21, "code": "tor", "name": "Toronto"},
+               {"id": 26, "code": "nue", "name": "Nuremberg"}]
+    scroll, view = gtkui.make_region_list(regions, 21)
+    model = view.get_model()
+    labels = [model[i][0] for i in range(len(model))]
+    assert labels == ["Canada - Toronto (tor)", "Germany - Frankfurt (fra)",
+                      "Germany - Nuremberg (nue)"]
+    sel_model, it = view.get_selection().get_selected()
+    assert it is not None and sel_model.get_value(it, 1) == 21
+    assert view.get_enable_search()
