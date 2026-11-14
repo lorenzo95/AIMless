@@ -1973,6 +1973,11 @@ class MessagesView(Gtk.Box):
             return
         thread = self.selected
         conv = thread["conv"]
+        # Replying means this conversation is being read: clear any unread that
+        # accumulated (e.g. while the window was hidden to the tray).
+        if thread.get("unread"):
+            thread["unread"] = 0
+        self.app.session.store.mark_read(conv)
         ts = int(time.time() * 1000)
         self._send_in_flight = True
         self.send_button.set_sensitive(False)
@@ -2251,6 +2256,20 @@ class MessagesView(Gtk.Box):
         return (thread is not None and self.selected is thread
                 and self.app.is_active()
                 and self.app.stack.get_visible_child_name() == "messages")
+
+    def mark_selected_read(self):
+        """Clear the unread of the conversation currently on screen. Selecting a
+        thread already does this, but a thread that was selected while the window
+        was hidden does not re-fire on_thread_selected when the window reopens -
+        so the unread gathered while hidden must be cleared here too."""
+        thread = self.selected
+        if thread is None or not self._is_viewing(thread):
+            return
+        conv = thread.get("conv")
+        self.app.session.store.mark_read(conv)
+        if thread.get("unread"):
+            thread["unread"] = 0
+            self.update_thread_row(conv)
 
     def _alert_state(self, conv, node):
         """(visible, muted, blocked) for alerting on a message from ``node``."""
@@ -2924,6 +2943,7 @@ class AimlessWindow(Gtk.Window):
         self._want_geometry = False
         self.connect("configure-event", self.on_configure)
         self.connect("map-event", self._on_map)
+        self.connect("notify::is-active", self._on_active_changed)
         self._presence_busy = False
         self._status_busy = False
         self._request_open = False
@@ -3910,6 +3930,13 @@ class AimlessWindow(Gtk.Window):
             self._want_geometry = False
             GLib.idle_add(self._apply_saved_position)
         return False
+
+    def _on_active_changed(self, *_):
+        # Reopening from the tray (or refocusing) makes the window active: the
+        # conversation already on screen is now being read, so clear the unread
+        # that piled up while it was hidden.
+        if self.is_active() and getattr(self, "messages", None) is not None:
+            self.messages.mark_selected_read()
 
     def reset_geometry(self):
         for k in ("window_x", "window_y", "window_maximized"):

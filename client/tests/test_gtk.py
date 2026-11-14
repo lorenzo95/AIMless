@@ -1642,6 +1642,27 @@ def test_unread_counts_when_window_hidden_even_if_thread_selected(gtk_app, monke
         f"unread not counted while hidden: {win.messages.threads[b_node]['unread']}"
 
 
+def test_unread_cleared_when_window_reactivated(gtk_app, monkeypatch):
+    """Regression: unread gathered while the window was hidden must clear when
+    the window is reopened/refocused, even though the already-selected thread
+    does not re-fire on_thread_selected."""
+    app = gtk_app
+    win = app["win"]
+    bob = app["bob"]
+    b_node = app["b_node"]
+    win.stack.set_visible_child_name("messages")
+    win.messages.thread_list.select_row(win.messages.threads[b_node]["row"])
+    monkeypatch.setattr(win, "is_active", lambda: False)
+    ts = int(time.time() * 1000)
+    bob.send(app["session"].client.pubkey_hex, app["a_node"], "while hidden", ts)
+    assert _pump(win, lambda: win.messages.threads[b_node]["unread"] >= 1, timeout=30)
+    # Reopen from the tray: the window becomes active again.
+    monkeypatch.setattr(win, "is_active", lambda: True)
+    win.notify("is-active")
+    assert _pump(win, lambda: win.messages.threads[b_node]["unread"] == 0, timeout=10), \
+        f"unread not cleared on reactivate: {win.messages.threads[b_node]['unread']}"
+
+
 def test_linkify_plain_text_is_escaped_only():
     assert gtkui.linkify("hello <world> & friends") == \
         GLib.markup_escape_text("hello <world> & friends")
