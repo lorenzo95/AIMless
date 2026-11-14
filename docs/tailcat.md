@@ -188,3 +188,18 @@ unaffected. Verified end-to-end over public DERP by
 - tailcat v0.7.0 makes no API/wire stability promises; the version is pinned.
 - Sender identity uses `Server.PeerEnv` (`TAILCAT_PEER_KEY`); v0.7.0 has no
   exported `PeerKey`. Allowlist removal for blocking is via connection close.
+
+## Setup & identity notes
+
+- **Backup scope.** The encrypted backup carries your E2E identity, the tailcat
+  node key, your relay/region, and contacts - so importing keeps your address.
+  Groups/rooms and message history live in the local store and are *not* backed up.
+- **Regenerate identity.** Keys & Identity -> "Regenerate identity" (tailcat) makes
+  a fresh node key + address; old invites stop working, but contacts/messages (E2E
+  key) are kept.
+- **`wgengine` / `magicsock` logs are tailcat, not Yggdrasil.** tailcat is WireGuard
+  + magicsock + DERP, so those log lines are its own engine; the daemon is not
+  connecting to Yggdrasil.
+- **Self-hosted relays** use region 900 and embed their hostname(s) in the address
+  (comma-separated for several). A bad relay config can't lock you out: the app
+  offers "Reset relay & retry" if the daemon won't start.
