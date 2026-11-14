@@ -269,3 +269,41 @@ def test_make_region_list_sorts_and_preselects():
     sel_model, it = view.get_selection().get_selected()
     assert it is not None and sel_model.get_value(it, 1) == 21
     assert view.get_enable_search()
+
+
+def test_first_run_region_prompt_new_vs_import():
+    # Regression: a brand-new identity must be offered the region picker even
+    # though the daemon already auto-picked + persisted a region; only a backup
+    # import (region restored) skips the prompt.
+    calls = []
+
+    class FakeApp:
+        def log(self, *a):
+            pass
+
+        def _relay_dialog(self, parent, st, first_run=False):
+            calls.append(first_run)
+
+    class FakeSup:
+        def status(self):
+            return {"transport": "tailcat", "relay": {"region_id": 21},
+                    "region": {"id": 21}}
+
+    app = FakeApp()
+    app.supervisor = FakeSup()
+    gtkui.AimlessApp._first_run_peers(app, imported=False)
+    assert calls == [True]      # new identity -> region picker shown
+    calls.clear()
+    gtkui.AimlessApp._first_run_peers(app, imported=True)
+    assert calls == []          # import with region restored -> skipped
+
+
+def test_relay_cfg_equal():
+    assert gtkui.relay_cfg_equal({"region_id": 21}, {"region_id": 21})
+    assert gtkui.relay_cfg_equal({"hostname": ""}, {})
+    assert not gtkui.relay_cfg_equal({"region_id": 21}, {"region_id": 4})
+    assert not gtkui.relay_cfg_equal({"region_id": 21}, {})
+    assert not gtkui.relay_cfg_equal({"hostname": "a.example"}, {"region_id": 21})
+    assert gtkui.relay_cfg_equal({"hostname": "a.example", "derpmap_url": ""},
+                                 {"hostname": "a.example"})
+    assert not gtkui.relay_cfg_equal({"derpmap_url": "http://x/m"}, {})

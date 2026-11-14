@@ -3501,9 +3501,31 @@ class AimlessWindow(Gtk.Window):
             crypto.save_identity(identity_path(), keysmod.signing_key(seed), pw)
             self._info_dialog("Identity written",
                               "Quit and reopen aimless to use the new identity.", parent=dlg)
-        idbtn = Gtk.Button(label="Import identity")
-        idbtn.connect("clicked", import_identity)
-        ident.pack_start(idbtn, False, False, 0)
+        def regenerate_identity(*_):
+            if not self._confirm(
+                    "Regenerate your client identity?",
+                    "This creates a NEW encryption key. All existing conversations break "
+                    "and every contact must re-add your invite. This cannot be undone here. "
+                    "Restart aimless afterwards to use it.",
+                    parent=dlg):
+                return
+            pw = self.app_ref.passphrase if self.app_ref else None
+            if not pw:
+                self._info_dialog("Passphrase unavailable",
+                                  "Reopen aimless to regenerate an identity.", parent=dlg)
+                return
+            crypto.save_identity(identity_path(), keysmod.signing_key(os.urandom(32)), pw)
+            self._info_dialog("Identity regenerated",
+                              "Quit and reopen aimless to use the new identity.", parent=dlg)
+
+        idbtns = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        ib = Gtk.Button(label="Import identity")
+        ib.connect("clicked", import_identity)
+        rb = Gtk.Button(label="Regenerate identity")
+        rb.connect("clicked", regenerate_identity)
+        idbtns.pack_start(ib, False, False, 0)
+        idbtns.pack_start(rb, False, False, 0)
+        ident.pack_start(idbtns, False, False, 0)
 
         # --- backup / restore ---
         bk = section("Backup & restore")
@@ -4030,6 +4052,15 @@ def restart_daemon(supervisor, log=None):
         time.sleep(0.1)
 
 
+def relay_cfg_equal(cfg, relay):
+    """True when a pending relay config matches the applied one (nothing to save)."""
+    return (
+        cfg.get("hostname", "") == (relay.get("hostname") or "")
+        and cfg.get("region_id", 0) == (relay.get("region_id") or 0)
+        and (cfg.get("derpmap_url") or "") == (relay.get("derpmap_url") or "")
+    )
+
+
 def apply_relay(supervisor, cfg, relay, log=None):
     """Persist a relay config (setrelay) and apply it. Returns (message, new_status);
     new_status is the refreshed supervisor status only when the local daemon was
@@ -4048,12 +4079,7 @@ def apply_relay(supervisor, cfg, relay, log=None):
         d.close()
     if r.get("op") != "relay":
         return f"error: {r.get('error', 'unknown')}", None
-    unchanged = (
-        cfg.get("hostname", "") == (relay.get("hostname") or "")
-        and cfg.get("region_id", 0) == (relay.get("region_id") or 0)
-        and (cfg.get("derpmap_url") or "") == (relay.get("derpmap_url") or "")
-    )
-    if unchanged:
+    if relay_cfg_equal(cfg, relay):
         return "No change.", None
     if supervisor.external:
         return "Saved. Restart the remote daemon to apply.", None
@@ -4776,7 +4802,7 @@ class AimlessApp:
         if peers != current:
             self._apply_peer_list(peers)
 
-    def _first_run_peers(self):
+    def _first_run_peers(self, imported=False):
         """The network step of the setup wizard. Yggdrasil: the built-in peer
         list works out of the box, so this is about adding your own. tailcat:
         the public DERP relays work out of the box, so this is informational."""
@@ -4786,9 +4812,9 @@ class AimlessApp:
             return
         if is_tailcat(st):
             relay = st.get("relay") or {}
-            if relay.get("region_id") or relay.get("hostname"):
-                # Region/relay already set (e.g. restored from a backup) - it is
-                # already part of the address, so don't re-prompt.
+            if imported and (relay.get("region_id") or relay.get("hostname")):
+                # Region/relay restored from the backup - already part of the
+                # address, so don't re-prompt. A brand-new identity still picks.
                 return
             self._relay_dialog(None, st, first_run=True)
             return
@@ -4882,11 +4908,7 @@ class AimlessApp:
         status.set_xalign(0)
         box.pack_start(status, False, False, 0)
 
-        dlg.show_all()
-        while True:
-            resp = dlg.run()
-            if resp != Gtk.ResponseType.APPLY:
-                break
+        def pending_cfg():
             hostname = host_entry.get_text().strip()
             cfg = {"hostname": hostname}
             map_url = map_entry.get_text().strip()
@@ -4896,6 +4918,23 @@ class AimlessApp:
                 model, it = region_view.get_selection().get_selected()
                 if it is not None:
                     cfg["region_id"] = model.get_value(it, 1)
+            return cfg
+
+        def refresh_save(*_):
+            save_btn.set_sensitive(not relay_cfg_equal(pending_cfg(), relay))
+
+        host_entry.connect("changed", refresh_save)
+        map_entry.connect("changed", refresh_save)
+        if region_view is not None:
+            region_view.get_selection().connect("changed", refresh_save)
+        refresh_save()
+
+        dlg.show_all()
+        while True:
+            resp = dlg.run()
+            if resp != Gtk.ResponseType.APPLY:
+                break
+            cfg = pending_cfg()
             save_btn.set_sensitive(False)
             close_btn.set_sensitive(False)
             status.set_text("Saving …" if self.supervisor.external
@@ -4913,8 +4952,8 @@ class AimlessApp:
             except Exception as e:
                 status.set_text(f"error: {e}")
             finally:
-                save_btn.set_sensitive(True)
                 close_btn.set_sensitive(True)
+                refresh_save()
         dlg.destroy()
 
     def open_window(self):
@@ -4942,6 +4981,7 @@ class AimlessApp:
         session = None
         passphrase = self.passphrase
         fresh_identity = False
+        imported_identity = False
         if not os.path.exists(identity_path()):
             for _create in range(3):
                 created = ask_create_identity(None)
@@ -4955,6 +4995,7 @@ class AimlessApp:
                         try:
                             session = Session(passphrase)
                             fresh_identity = True
+                            imported_identity = True
                             break
                         except (ValueError, OSError) as e:
                             _error_dialog(None, f"imported identity could not be opened: {e}")
@@ -5013,7 +5054,7 @@ class AimlessApp:
                     return
         if fresh_identity:
             # Step 2 of the setup wizard: the peers.
-            self._first_run_peers()
+            self._first_run_peers(imported=imported_identity)
         self.passphrase = passphrase
         if session.cache_recovered:
             self.log(f"cache recovery: {session.cache_recovered}")
