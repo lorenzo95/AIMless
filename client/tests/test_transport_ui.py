@@ -14,8 +14,9 @@ def test_is_tailcat():
 
 
 def test_net_label():
-    assert gtkui.net_label({"transport": "tailcat", "peers_up": 1}) == "relay up"
-    assert gtkui.net_label({"transport": "tailcat", "peers_up": 0}) == "relay down"
+    # tailcat's relay state is shown by the status dot; no redundant label.
+    assert gtkui.net_label({"transport": "tailcat", "peers_up": 1}) == ""
+    assert gtkui.net_label({"transport": "tailcat", "peers_up": 0}) == ""
     assert gtkui.net_label({"transport": "yggdrasil", "peers_up": 3, "peers_total": 5}) == "peers 3/5"
     assert gtkui.net_label(None) == "peers 0/0"
 

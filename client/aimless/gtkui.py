@@ -631,11 +631,11 @@ def is_tailcat(st):
 
 def net_label(st):
     """Short network label for the status/route bars. Yggdrasil counts peers;
-    tailcat has a single DERP relay, so it reports the relay state."""
+    tailcat's relay state is already shown by the status dot, so no extra label."""
     if not st:
         return "peers 0/0"
     if is_tailcat(st):
-        return "relay up" if st.get("peers_up", 0) > 0 else "relay down"
+        return ""
     return f"peers {st.get('peers_up', 0)}/{st.get('peers_total', 0)}"
 
 
@@ -2757,8 +2757,10 @@ class ActivityView(Gtk.Box):
                              f"- update aimlessd-linux-amd64, then `aimless stop` and reopen")
         colour, text = _self_state(st)
         state = f"<span foreground='{colour}'>●  {text}</span>"
+        nl = net_label(st)
+        net_part = f"  ·  {nl}" if nl else ""
         self.info_label.set_markup(
-            f"{state}  -  address <b>{short_address(st['address'])}</b>  ·  {net_label(st)}\n"
+            f"{state}  -  address <b>{short_address(st['address'])}</b>{net_part}\n"
             f"daemon: {build}  ·  client: aimless/{client_version}{version_note}{tnote}")
 
     def log(self, line):
@@ -3251,9 +3253,10 @@ class AimlessWindow(Gtk.Window):
             else:
                 self.route_label.set_tooltip_text(relay_tooltip(st) if is_tailcat(st) else (st.get("address") or None))
             colour, text = _self_state(st)
+            nl = net_label(st)
+            net_part = f"  ·  {nl}" if nl else ""
             self.route_label.set_markup(
-                f"<span foreground='{colour}'>●  {text}</span>  -  {short_address(st['address'])}  ·  "
-                f"{net_label(st)}{tail}")
+                f"<span foreground='{colour}'>●  {text}</span>  -  {short_address(st['address'])}{net_part}{tail}")
             if st.get("peers_up", 0) > 0:
                 self._set_route_icon(first_icon(
                     "network-wireless-signal-excellent-symbolic", "applications-internet"))
