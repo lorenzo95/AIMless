@@ -185,15 +185,15 @@ That last one matters more than it looks: with no desktop entry the taskbar show
 
 The icon is the AIM *running man* - yellow on a blue tile - drawn with Cairo at startup (the repo carries no binary assets) and written into the icon theme. It is only rewritten when it changes. Every window the app opens carries it, including the unlock dialog that is on screen before you type your passphrase.
 
-> **Upgrading from an older version?** The on-disk layout changed once; old files are not migrated. To keep your identity, **export a backup first** (Keys & Identity -> *Export encrypted backup*) or copy `identity.json` and `node.key` by hand, then use **Import backup...** on the first-run screen. Message history and attachments are not preserved by the backup.
+> **Upgrading from an older version?** The on-disk layout changed once; old files are not migrated. To keep your identity, **export an identity backup first** (Keys & Identity -> *Export identity…*) or copy `identity.json` and `node.key` by hand, then use **Import backup…** on the first-run screen. To keep your rooms, message history and attachments too, also export a **data backup** (*Export data…*) and import it after your identity.
 
 ## Keys, identity and the CLI
 
 Header menu -> **Keys & Identity ...**
 
 - **Yggdrasil node key** - see your address, or set a specific one (paste 64/128-hex from a vanity generator), generate a random one, or reset to default. The address is previewed; applying restarts the daemon. Changing it changes your address, so old invites go stale.
-- **Client identity** - replace your encryption key from a 64-hex seed. This breaks existing conversations; restart AIMless afterwards.
-- **Backup & restore** - one passphrase-encrypted bundle (identity seed, node key, screen name, contacts). Restoring overwrites your keys.
+- **Client identity** - replace your encryption key from a 64-hex seed, or regenerate a fresh one. This breaks existing conversations; restart AIMless afterwards.
+- **Backup & restore** - two passphrase-encrypted bundles, both imported with *Import backup…* (it detects the kind): **identity** (identity seed, node/tailcat key, relay/region, screen name, contacts - back up once) and **data** (rooms, message history, and optionally attachment files - back up more often). Identity restore overwrites your keys; data restore merges into your history (duplicates skipped) and is portable across machines and passphrases.
 
 Keys are written `0600` and atomically, and seeds are never logged.
 
