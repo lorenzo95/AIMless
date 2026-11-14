@@ -133,9 +133,11 @@ longer but self-contained.
 Two region facts worth knowing:
 - You and a buddy can be on *different* regions and it works: each invite carries
   that node's own region, and the other side connects to it.
-- *Changing your own region* changes your address (the region is part of it), so
-  buddies who already added you need your new invite. Pick your region before
-  sharing invites.
+- *Changing your own region* changes your address (the region is part of it).
+  Active buddies pick up the new address automatically: every status ("hello")
+  carries your current dial address, and the receiver re-registers it when it
+  changes (within ~60s). A buddy you haven't talked to in a while may still need
+  your new invite.
 
 To run your own relay (no rate limit, no revocability risk), run
 [`derper`](https://github.com/tailscale/tailscale/tree/main/cmd/derper) on a host
@@ -207,3 +209,8 @@ unaffected. Verified end-to-end over public DERP by
   dial to port 443) every ~20s, so a self-hosted host that doesn't resolve or a
   dead relay shows as "relay not reachable" (with the reason on hover) instead of
   a false "online". tailcat itself doesn't expose its DERP connection state.
+- **Buddy addresses track region changes.** Each periodic status carries the
+  sender's current dial address (signed + E2E-encrypted). On receipt, a changed
+  address is re-registered for that contact, so a buddy that switches DERP region
+  stays reachable without re-sharing an invite. Backward compatible: older
+  clients simply omit the field.
