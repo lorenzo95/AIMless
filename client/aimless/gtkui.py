@@ -3141,6 +3141,12 @@ class AimlessWindow(Gtk.Window):
         self.self_id_label.set_tooltip_text(tip)
         self.self_key_label.set_tooltip_text(tip)
 
+    def _update_peers_label(self, st):
+        """Name the options-menu item for the transport: it opens the peer list
+        (Yggdrasil) or the relay panel (tailcat). The item lives on the window."""
+        if getattr(self, "peers_item", None) is not None:
+            self.peers_item.set_label("Relay …" if is_tailcat(st) else "Peers …")
+
     def refresh_route(self, st):
         tunnel = self.supervisor.tunnel_state() if self.supervisor else None
         if tunnel is not None and not tunnel["up"]:
@@ -3166,6 +3172,7 @@ class AimlessWindow(Gtk.Window):
                 "network-wireless-signal-none-symbolic", "network-offline-symbolic",
                 "network-error-symbolic"))
         else:
+            self._update_peers_label(st)
             tail = ""
             if tunnel is not None:
                 tail = f"  ·  ↗ {GLib.markup_escape_text(tunnel['host'])}"
@@ -5098,8 +5105,9 @@ class AimlessApp:
             # The status request itself failed - the link check owns that
             # case, and guessing here would clear a real island.
             return
-        if getattr(self, "peers_item", None) is not None:
-            self.peers_item.set_label("Relay …" if is_tailcat(st) else "Peers …")
+        win = getattr(self, "window", None)
+        if win is not None:
+            win._update_peers_label(st)
         peers = st.get("peers_total", 0)
         up = st.get("peers_up", 0)
         if up > 0:

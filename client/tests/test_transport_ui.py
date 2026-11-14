@@ -137,3 +137,28 @@ def test_apply_relay_restart_failed(monkeypatch):
     assert "did not restart" in msg
     assert got is None
     assert rec["restart"] == 1
+
+
+def test_update_peers_label_targets_the_window_item():
+    # Regression: the menu item lives on the window, not the app. The old code
+    # read self.peers_item on the app (always None), so the label never changed
+    # from "Peers …" even on tailcat.
+    class FakeItem:
+        def __init__(self):
+            self.label = None
+
+        def set_label(self, label):
+            self.label = label
+
+    class FakeWin:
+        def __init__(self):
+            self.peers_item = FakeItem()
+
+    win = FakeWin()
+    gtkui.AimlessWindow._update_peers_label(win, {"transport": "tailcat"})
+    assert win.peers_item.label == "Relay …"
+    gtkui.AimlessWindow._update_peers_label(win, {"transport": "yggdrasil"})
+    assert win.peers_item.label == "Peers …"
+    # A window without the item yet must not raise.
+    win.peers_item = None
+    gtkui.AimlessWindow._update_peers_label(win, {"transport": "tailcat"})

@@ -116,18 +116,25 @@ succeeds the relay leaves the data path entirely. (tailcat's own
 relays accept tailcat connections too, so we default to the full map.)
 
 **Regions.** Your DERP region is part of your tailcat address, so pick it once
-before sharing invites. Choose it in the GUI relay panel (the "Relay …" menu
-item), which lists every region in the map and pre-selects the one you are on; or
-set `relay.region_id` in `config.json` (e.g. 21 = Toronto). Saving in the GUI
-applies right away by restarting the daemon; a hand-edited `config.json` needs a
-restart. The route bar shows your current region on hover. Verified: a node on
-the official Toronto relay (region 21) connects fine.
+before sharing invites. On first run the nearest region is picked automatically
+and remembered, so your address stays the same across restarts. Choose a
+different one in the GUI relay panel (the "Relay …" menu item), which lists every
+region in the map and pre-selects the one you are on; or set `relay.region_id` in
+`config.json` (e.g. 21 = Toronto). Saving in the GUI applies right away by
+restarting the daemon; a hand-edited `config.json` needs a restart. The route bar
+shows your current region on hover. Verified: a node on the official Toronto
+relay (region 21) connects fine.
+
+The address uses the short region-ID form (like the `tailcat` CLI): it names the
+region by number, and the dialing peer looks up that region's relays in the DERP
+map. A self-hosted relay instead embeds its relay details, so its address is
+longer but self-contained.
 
 Two region facts worth knowing:
-- You and a buddy can be on *different* regions and it works: each invite embeds
+- You and a buddy can be on *different* regions and it works: each invite carries
   that node's own region, and the other side connects to it.
-- *Changing your own region* changes your address (the region is embedded in it),
-  so buddies who already added you need your new invite. Pick your region before
+- *Changing your own region* changes your address (the region is part of it), so
+  buddies who already added you need your new invite. Pick your region before
   sharing invites.
 
 To run your own relay (no rate limit, no revocability risk), run

@@ -138,6 +138,12 @@ func newTailcatNode(datadir string, region *tailcfg.DERPRegion, log *aimlessLogg
 	if err := t.startServer(region, regionID, derpMapURL); err != nil {
 		return nil, err
 	}
+	// If the region was auto-picked (no explicit region or self-hosted relay),
+	// persist it so the address is stable across restarts and can use the short
+	// RegionID form. Injected regions (tests) and self-hosted relays are skipped.
+	if region == nil && relay.RegionID == 0 {
+		t.persistAutoRegion()
+	}
 	return t, nil
 }
 
@@ -218,7 +224,42 @@ func (t *TailcatNode) Pub() PeerID {
 	return PeerID(raw[:])
 }
 
-func (t *TailcatNode) Address() string { return string(t.server.TailcatAddr()) }
+// Address returns the tailcat address. For a public DERP region it uses the
+// short RegionID-only form (like the tailcat CLI): the dialing peer resolves the
+// region from the DERP map once. A self-hosted relay embeds its custom region
+// instead (it is not in the public map) - longer, but self-contained.
+func (t *TailcatNode) Address() string {
+	long := t.server.TailcatAddr()
+	t.mu.Lock()
+	rc := t.relay
+	t.mu.Unlock()
+	if rc.Hostname == "" && rc.RegionID != 0 {
+		if ci, err := tailcat.ParseAddr(long); err == nil {
+			ci.Region = nil
+			ci.RegionID = tailcfg.DERPRegionID(rc.RegionID)
+			return string(ci.Addr())
+		}
+	}
+	return string(long)
+}
+
+// persistAutoRegion records the region the server auto-picked (nearest by
+// netcheck) so it is stable across restarts: otherwise a restart could pick a
+// different region and change the address, staling invites. It also lets Address
+// use the short RegionID form.
+func (t *TailcatNode) persistAutoRegion() {
+	cur, _ := t.Regions()
+	if cur.ID == 0 {
+		return // offline or unidentified: keep the long form, retry next start
+	}
+	t.mu.Lock()
+	t.relay.RegionID = cur.ID
+	rc := t.relay
+	t.mu.Unlock()
+	if err := saveRelayConfig(t.datadir, rc); err != nil {
+		t.logger.Printf("persist auto region: %v", err)
+	}
+}
 
 func (t *TailcatNode) Stop() {
 	t.closeOnce.Do(func() {
@@ -357,9 +398,10 @@ func (t *TailcatNode) getOrCreateClient(peerHex string) (*tailcat.Client, error)
 		return nil, fmt.Errorf("no tailcat address for peer %s", peerHex)
 	}
 	cl = &tailcat.Client{
-		Server: tailcat.Addr(addr),
-		Key:    t.priv,
-		Logf:   func(format string, args ...any) { t.logger.Printf(format, args...) },
+		Server:     tailcat.Addr(addr),
+		Key:        t.priv,
+		DERPMapURL: t.derpMapURL, // resolve short RegionID addresses against our map
+		Logf:       func(format string, args ...any) { t.logger.Printf(format, args...) },
 	}
 	// Establish the meow handshake so the server adds us as a peer before dial.
 	ctx, cancel := context.WithTimeout(context.Background(), tailcatDialTimeout)
