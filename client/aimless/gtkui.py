@@ -3228,9 +3228,23 @@ class AimlessWindow(Gtk.Window):
                 node_seed = f.read().strip()
         except OSError:
             pass
+        tailcat_key = None
+        try:
+            with open(os.path.join(paths.daemon_dir(), "tailcat.key")) as f:
+                tailcat_key = f.read().strip()
+        except OSError:
+            pass
+        relay = None
+        try:
+            with open(os.path.join(paths.daemon_dir(), "config.json")) as f:
+                relay = (json.load(f) or {}).get("relay")
+        except (OSError, ValueError):
+            pass
         return {
             "identitySeed": bytes(self.session.identity).hex(),
             "nodeSeed": node_seed,
+            "tailcatKey": tailcat_key,
+            "relay": relay,
             "screen": self.session.self_screen,
             "pubkey": self.session.client.pubkey_hex,
             "contacts": protocol.load_contacts(contacts_path()),
@@ -3873,9 +3887,43 @@ def restore_bundle(path, bundle_passphrase, app_passphrase):
     crypto.save_identity(identity_path(), keysmod.signing_key(seed), app_passphrase)
     if data.get("nodeSeed"):
         keysmod.write_node_key(paths.daemon_dir(), bytes.fromhex(data["nodeSeed"]))
+    if data.get("tailcatKey"):
+        _write_tailcat_key(paths.daemon_dir(), data["tailcatKey"])
+    if data.get("relay"):
+        _write_relay_config(paths.daemon_dir(), data["relay"])
     if data.get("contacts"):
         protocol.save_contacts(contacts_path(), data["contacts"])
     return data
+
+
+def _write_tailcat_key(datadir, keytext):
+    """Restore the tailcat identity file (node key + PSK) from a backup."""
+    os.makedirs(datadir, exist_ok=True)
+    path = os.path.join(datadir, "tailcat.key")
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        f.write(keytext if keytext.endswith("\n") else keytext + "\n")
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+
+
+def _write_relay_config(datadir, relay):
+    """Merge a relay block into the daemon's config.json, preserving other keys."""
+    os.makedirs(datadir, exist_ok=True)
+    path = os.path.join(datadir, "config.json")
+    try:
+        with open(path) as f:
+            cfg = json.load(f)
+    except (OSError, ValueError):
+        cfg = {}
+    if not isinstance(cfg, dict):
+        cfg = {}
+    cfg["relay"] = relay
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(cfg, f, indent=2)
+        f.write("\n")
+    os.replace(tmp, path)
 
 
 def restart_daemon(supervisor, log=None):
@@ -4653,6 +4701,11 @@ class AimlessApp:
             self.log("daemon not answering - skipping the network step")
             return
         if is_tailcat(st):
+            relay = st.get("relay") or {}
+            if relay.get("region_id") or relay.get("hostname"):
+                # Region/relay already set (e.g. restored from a backup) - it is
+                # already part of the address, so don't re-prompt.
+                return
             self._relay_dialog(None, st, first_run=True)
             return
         current = st.get("peer_list") or []

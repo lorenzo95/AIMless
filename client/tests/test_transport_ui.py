@@ -223,3 +223,16 @@ def test_derp_map_error_validates_regions(monkeypatch):
     monkeypatch.setattr(urllib.request, "urlopen",
                         lambda *a, **k: FakeResp(b'{"Regions": {"1": {}}}'))
     assert gtkui._derp_map_error("http://x/map") is None
+
+
+def test_write_tailcat_key_and_relay_restore(tmp_path):
+    keytext = '{"key": "privkey:abc", "psk": "psk:def"}'
+    gtkui._write_tailcat_key(str(tmp_path), keytext)
+    written = (tmp_path / "tailcat.key").read_text()
+    assert written.strip() == keytext
+    assert (tmp_path / "tailcat.key").stat().st_mode & 0o777 == 0o600
+    # Relay merge preserves unrelated config keys.
+    (tmp_path / "config.json").write_text(json.dumps({"peers": ["p"]}))
+    gtkui._write_relay_config(str(tmp_path), {"region_id": 21})
+    cfg = json.loads((tmp_path / "config.json").read_text())
+    assert cfg["relay"] == {"region_id": 21} and cfg["peers"] == ["p"]
