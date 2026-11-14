@@ -52,6 +52,10 @@ const tailcatDialTimeout = 2 * time.Second
 // tailcat connections too, so we default to the full map.
 const defaultDERPMapURL = "https://login.tailscale.com/derpmap/default"
 
+// selfHostedRegionID is the DERP region ID used for a self-hosted relay. It is
+// deliberately outside the public ranges (official 1-28, tailcat.dev 301-304).
+const selfHostedRegionID tailcfg.DERPRegionID = 900
+
 // tailcatKeyset is the persisted identity: node key + pre-shared key + an
 // optional fixed DERP region. The address is stable across restarts only when
 // all three are restored together (the PSK is part of the address capability).
@@ -590,10 +594,18 @@ func regionForRelay(cfg RelayConfig) *tailcfg.DERPRegion {
 	if strings.TrimSpace(cfg.Hostname) == "" {
 		return nil
 	}
-	reg := &tailcfg.DERPRegion{}
+	reg := &tailcfg.DERPRegion{
+		RegionID:   selfHostedRegionID,
+		RegionCode: "custom",
+		RegionName: "Self-hosted relay",
+	}
 	for _, host := range strings.Split(cfg.Hostname, ",") {
 		if host = strings.TrimSpace(host); host != "" {
-			reg.Nodes = append(reg.Nodes, &tailcfg.DERPNode{HostName: host})
+			reg.Nodes = append(reg.Nodes, &tailcfg.DERPNode{
+				HostName: host,
+				Name:     host,
+				RegionID: selfHostedRegionID,
+			})
 		}
 	}
 	if len(reg.Nodes) == 0 {
@@ -613,6 +625,7 @@ func (t *TailcatNode) Regions() (RegionInfo, []RegionInfo) {
 	byHost := t.regionByHost
 	url := t.derpMapURL
 	relayRegion := t.relay.RegionID
+	hostname := t.relay.Hostname
 	t.mu.Unlock()
 	if cached == nil && url != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -635,6 +648,10 @@ func (t *TailcatNode) Regions() (RegionInfo, []RegionInfo) {
 			t.regionByHost = byHost
 			t.mu.Unlock()
 		}
+	}
+	if hostname != "" {
+		// Self-hosted relay: not in the public map; report it directly.
+		return RegionInfo{ID: int(selfHostedRegionID), Code: "custom", Name: "Self-hosted relay"}, cached
 	}
 	var current RegionInfo
 	if ci, err := tailcat.ParseAddr(t.server.TailcatAddr()); err == nil {

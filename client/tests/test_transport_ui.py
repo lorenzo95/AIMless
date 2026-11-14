@@ -1,6 +1,8 @@
 """Transport-aware UI helpers (Phase 5): the status/route bars and tray must
 describe tailcat's relay model, not Yggdrasil's peer count, and keep the long
 tailcat address readable."""
+import json
+
 from aimless import gtkui
 
 
@@ -162,3 +164,62 @@ def test_update_peers_label_targets_the_window_item():
     # A window without the item yet must not raise.
     win.peers_item = None
     gtkui.AimlessWindow._update_peers_label(win, {"transport": "tailcat"})
+
+
+def test_daemon_binary_finds_tailcat_without_env(tmp_path, monkeypatch):
+    monkeypatch.delenv("AIMLESS_DAEMON_BIN", raising=False)
+    binpath = tmp_path / "aimlessd-tailcat-linux-amd64"
+    binpath.write_text("#!/bin/sh\n")
+    monkeypatch.setattr(gtkui.sys, "argv", [str(tmp_path / "aimless.pyz")])
+    assert gtkui.daemon_binary() == str(binpath)
+
+
+def test_daemon_binary_prefers_yggdrasil_when_both_present(tmp_path, monkeypatch):
+    monkeypatch.delenv("AIMLESS_DAEMON_BIN", raising=False)
+    (tmp_path / "aimlessd").write_text("x")
+    (tmp_path / "aimlessd-tailcat").write_text("x")
+    monkeypatch.setattr(gtkui.sys, "argv", [str(tmp_path / "aimless.pyz")])
+    assert gtkui.daemon_binary() == str(tmp_path / "aimlessd")
+
+
+def test_reset_relay_config_keeps_other_settings(tmp_path, monkeypatch):
+    monkeypatch.setattr(gtkui.paths, "daemon_dir", lambda: str(tmp_path))
+    (tmp_path / "config.json").write_text(
+        json.dumps({"peers": ["x"], "relay": {"region_id": 21}}))
+    assert gtkui.reset_relay_config() is True
+    after = json.loads((tmp_path / "config.json").read_text())
+    assert "relay" not in after and after["peers"] == ["x"]
+    assert gtkui.reset_relay_config() is False  # nothing left to reset
+
+
+def test_apply_relay_rejects_bad_map_url(monkeypatch):
+    sup = _FakeSupervisor(external=False, status={}, running=True)
+    rec = _patch_relay_io(monkeypatch, {"op": "relay", "address": "tcOLD"})
+    monkeypatch.setattr(gtkui, "_derp_map_error", lambda url: "could not fetch")
+    msg, got = gtkui.apply_relay(sup, {"derpmap_url": "http://bad.example/map"}, {})
+    assert msg.startswith("error:") and "DERP map URL" in msg
+    assert got is None and rec["restart"] == 0 and rec["setrelay"] == []
+
+
+def test_derp_map_error_validates_regions(monkeypatch):
+    import urllib.request
+
+    class FakeResp:
+        def __init__(self, body):
+            self._body = body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return self._body
+
+    monkeypatch.setattr(urllib.request, "urlopen",
+                        lambda *a, **k: FakeResp(b'{"hello": 1}'))
+    assert gtkui._derp_map_error("http://x/map") is not None
+    monkeypatch.setattr(urllib.request, "urlopen",
+                        lambda *a, **k: FakeResp(b'{"Regions": {"1": {}}}'))
+    assert gtkui._derp_map_error("http://x/map") is None

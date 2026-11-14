@@ -369,7 +369,10 @@ def daemon_binary():
     override = os.environ.get("AIMLESS_DAEMON_BIN")
     if override:
         return override
-    names = ("aimlessd", "aimlessd-linux-amd64")
+    # Yggdrasil first (the default); the tailcat binary is also searched so it
+    # works without AIMLESS_DAEMON_BIN when it is the only one present.
+    names = ("aimlessd", "aimlessd-linux-amd64",
+             "aimlessd-tailcat", "aimlessd-tailcat-linux-amd64")
     dirs = [
         os.path.dirname(os.path.abspath(sys.argv[0])),
         os.getcwd(),
@@ -384,8 +387,11 @@ def daemon_binary():
             p = os.path.join(d, name)
             if os.path.exists(p):
                 return p
-    found = shutil.which("aimlessd")
-    return found
+    for name in ("aimlessd", "aimlessd-tailcat"):
+        found = shutil.which(name)
+        if found:
+            return found
+    return None
 
 
 class DaemonSupervisor:
@@ -3898,6 +3904,11 @@ def apply_relay(supervisor, cfg, relay, log=None):
     restarted, else None. A remote (tunnel) daemon is not restarted here - the
     client only owns the local process, so the remote one must be restarted by hand.
     """
+    map_url = (cfg.get("derpmap_url") or "").strip()
+    if map_url:
+        err = _derp_map_error(map_url)
+        if err:
+            return f"error: DERP map URL: {err}", None
     d = DaemonClient(supervisor.sock)
     try:
         r = d.request("setrelay", relay=cfg, timeout=10)
@@ -3908,6 +3919,7 @@ def apply_relay(supervisor, cfg, relay, log=None):
     unchanged = (
         cfg.get("hostname", "") == (relay.get("hostname") or "")
         and cfg.get("region_id", 0) == (relay.get("region_id") or 0)
+        and (cfg.get("derpmap_url") or "") == (relay.get("derpmap_url") or "")
     )
     if unchanged:
         return "No change.", None
@@ -3920,6 +3932,47 @@ def apply_relay(supervisor, cfg, relay, log=None):
     cur = new.get("region") or {}
     name = cur.get("name") or cur.get("code") or f"region {cur.get('id', '?')}"
     return f"Applied - you are now on {name}.", new
+
+
+def _derp_map_error(url):
+    """None if url serves a plausible DERP map, else a short error string. Used
+    to validate a custom map URL before saving it (a typo must not brick startup).
+    """
+    import urllib.request
+    try:
+        req = urllib.request.Request(url, headers={"Tailcat-Mode": "client"})
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            data = json.load(resp)
+    except Exception as e:
+        return f"could not fetch ({e})"
+    regions = data.get("Regions") if isinstance(data, dict) else None
+    if not isinstance(regions, dict) or not regions:
+        return "response is not a DERP map (no Regions)"
+    return None
+
+
+def reset_relay_config():
+    """Remove the relay block from the daemon's config.json so it falls back to
+    the default public network - the escape hatch when a bad relay config keeps
+    the daemon from starting. Returns True if a relay block was removed."""
+    path = os.path.join(paths.daemon_dir(), "config.json")
+    try:
+        with open(path) as f:
+            cfg = json.load(f)
+    except (OSError, ValueError):
+        return False
+    if not isinstance(cfg, dict) or "relay" not in cfg:
+        return False
+    del cfg["relay"]
+    try:
+        tmp = path + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(cfg, f, indent=2)
+            f.write("\n")
+        os.replace(tmp, path)
+    except OSError:
+        return False
+    return True
 
 
 def ask_text(parent, title, label):
@@ -4319,13 +4372,25 @@ class AimlessApp:
             return 0
 
         if not self.supervisor.external:
-            try:
-                self.supervisor.ensure(log=self.log)
-            except RuntimeError as e:
-                err = Gtk.MessageDialog(message_type=Gtk.MessageType.ERROR, buttons=Gtk.ButtonsType.CLOSE, text=str(e))
-                err.run()
-                err.destroy()
-                return 1
+            while True:
+                try:
+                    self.supervisor.ensure(log=self.log)
+                    break
+                except RuntimeError as e:
+                    dlg = Gtk.MessageDialog(
+                        message_type=Gtk.MessageType.ERROR,
+                        buttons=Gtk.ButtonsType.NONE,
+                        text="The daemon could not start.")
+                    dlg.format_secondary_text(
+                        f"{e}\n\nIf you changed the relay settings, they may be invalid. "
+                        "Reset the relay to the default public network and try again?")
+                    dlg.add_button("Quit", Gtk.ResponseType.CANCEL)
+                    dlg.add_button("Reset relay & retry", Gtk.ResponseType.OK)
+                    resp = dlg.run()
+                    dlg.destroy()
+                    if resp != Gtk.ResponseType.OK or not reset_relay_config():
+                        return 1
+                    self.log("relay config reset to the default public network - retrying")
 
         self.tray = TrayIcon(self)
         # The timers go up BEFORE the window. The unlock dialog is modal and
@@ -4605,8 +4670,8 @@ class AimlessApp:
         title = "AIMless - step 2 of 2: relay" if first_run else "AIMless - relay"
         dlg = Gtk.Dialog(title=title, transient_for=parent, modal=True)
         setup_app_icon(dlg)
-        dlg.add_button("Save", Gtk.ResponseType.APPLY)
-        dlg.add_button("Finish" if first_run else "Close", Gtk.ResponseType.OK)
+        save_btn = dlg.add_button("Save", Gtk.ResponseType.APPLY)
+        close_btn = dlg.add_button("Finish" if first_run else "Close", Gtk.ResponseType.OK)
         dlg.set_default_size(560, -1)
         box = dlg.get_content_area()
         box.set_spacing(10)
@@ -4687,7 +4752,10 @@ class AimlessApp:
                 idx = region_combo.get_active()
                 if 0 <= idx < len(regions):
                     cfg["region_id"] = regions[idx].get("id", 0)
-            status.set_text("Applying …")
+            save_btn.set_sensitive(False)
+            close_btn.set_sensitive(False)
+            status.set_text("Saving …" if self.supervisor.external
+                            else "Restarting daemon to apply …")
             while Gtk.events_pending():
                 Gtk.main_iteration()
             try:
@@ -4700,6 +4768,9 @@ class AimlessApp:
                     relay = new.get("relay") or {}
             except Exception as e:
                 status.set_text(f"error: {e}")
+            finally:
+                save_btn.set_sensitive(True)
+                close_btn.set_sensitive(True)
         dlg.destroy()
 
     def open_window(self):
