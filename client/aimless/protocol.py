@@ -264,9 +264,13 @@ def open_message(
 
 
 def seal_status(
-    identity: nacl.signing.SigningKey, buddy_pubkey_hex: str, screen: str, away, ts: int
+    identity: nacl.signing.SigningKey, buddy_pubkey_hex: str, screen: str, away, ts: int,
+    addr: str = "",
 ) -> str:
-    body = json.dumps({"screen": screen, "away": away, "ts": ts}, sort_keys=True).encode("utf-8")
+    body_obj = {"screen": screen, "away": away, "ts": ts}
+    if addr:
+        body_obj["addr"] = addr
+    body = json.dumps(body_obj, sort_keys=True).encode("utf-8")
     sig = _sign(identity, body)
     inner = json.dumps(
         {"v": 1, "kind": "status", "from": bytes(identity.verify_key).hex(), "body": body.decode(), "sig": sig}
@@ -288,4 +292,7 @@ def open_status(identity: nacl.signing.SigningKey, payload_b64: str) -> dict:
     body_obj = json.loads(st["body"])
     if not _verify(st["from"], st["body"].encode("utf-8"), st["sig"]):
         raise ValueError("bad signature")
-    return {"from": st["from"], "screen": body_obj["screen"], "away": body_obj["away"], "ts": body_obj["ts"]}
+    out = {"from": st["from"], "screen": body_obj["screen"], "away": body_obj["away"], "ts": body_obj["ts"]}
+    if "addr" in body_obj:
+        out["addr"] = body_obj["addr"]
+    return out

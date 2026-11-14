@@ -94,3 +94,44 @@ def test_the_cli_and_the_window_agree_about_a_buddy():
 
     p = {"online": False}
     assert buddy_state(p, _Client()) == "offline"
+
+
+def test_sync_contact_addrs_tracks_region_changes():
+    from aimless.daemon import Client
+    from aimless import protocol
+    import nacl.signing
+
+    recv = nacl.signing.SigningKey.generate()
+    recv_hex = bytes(recv.verify_key).hex()
+    buddy = nacl.signing.SigningKey.generate()
+    node = "ab" * 32
+
+    class FakeDaemon:
+        def __init__(self):
+            self.watch = []
+
+        def request(self, op, **kw):
+            if op == "watch":
+                self.watch.append((kw.get("to"), kw.get("addr")))
+            return {}
+
+    client = Client(FakeDaemon(), recv, "me")
+    fd = client.daemon
+
+    def presence_with(addr):
+        payload = protocol.seal_status(buddy, recv_hex, "buddy", None, 1, addr=addr)
+        return {node: {"status_payload": payload}}
+
+    client.sync_contact_addrs(presence_with("tcADDR1"), known_nodes={node})
+    assert fd.watch == [(node, "tcADDR1")]          # first sighting registers
+    client.sync_contact_addrs(presence_with("tcADDR1"), known_nodes={node})
+    assert len(fd.watch) == 1                       # unchanged -> no re-register
+    client.sync_contact_addrs(presence_with("tcADDR2"), known_nodes={node})
+    assert fd.watch[-1] == (node, "tcADDR2")        # region change -> new address
+    client.sync_contact_addrs(presence_with("200::1"), known_nodes={node})
+    assert len(fd.watch) == 2                       # non-tailcat address ignored
+    other = "cd" * 32
+    p = presence_with("tcADDR3")
+    p[other] = p.pop(node)
+    client.sync_contact_addrs(p, known_nodes={node})
+    assert len(fd.watch) == 2                       # non-contact not auto-added

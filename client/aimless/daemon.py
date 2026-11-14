@@ -275,6 +275,7 @@ class Client:
         self.pubkey_hex = bytes(identity.verify_key).hex()
         self.screen_name = screen_name
         self._node_key = None
+        self._synced_addrs = {}
 
     def whoami(self) -> dict:
         return self.daemon.request("whoami")
@@ -374,11 +375,38 @@ class Client:
             seqs[m["node"]] = resp.get("seq", 0)
         return seqs
 
-    def set_status(self, buddy_client_hex: str, buddy_node_hex: str, away) -> dict:
+    def set_status(self, buddy_client_hex: str, buddy_node_hex: str, away, addr: str = "") -> dict:
         from . import protocol
         payload = protocol.seal_status(
-            self.identity, buddy_client_hex, self.screen_name, away, ts=int(time.time() * 1000))
+            self.identity, buddy_client_hex, self.screen_name, away, ts=int(time.time() * 1000),
+            addr=addr)
         return self.daemon.request("setstatus", to=buddy_node_hex, payload=payload)
+
+    def sync_contact_addrs(self, presence: dict, known_nodes=None):
+        """Track buddies' current dial addresses from their signed, encrypted
+        status, so a buddy that changed DERP region stays reachable without a new
+        invite. Only re-registers when an address actually changes; restricted to
+        known contacts when known_nodes is given. Runs off the main thread."""
+        for node, p in presence.items():
+            if known_nodes is not None and node not in known_nodes:
+                continue
+            payload = p.get("status_payload")
+            if not payload:
+                continue
+            try:
+                st = self.decrypt_status(payload)
+            except Exception:
+                continue
+            addr = st.get("addr") or ""
+            if not addr.startswith("tc"):
+                continue
+            if self._synced_addrs.get(node) == addr:
+                continue
+            try:
+                self.add_contact(node, addr)
+                self._synced_addrs[node] = addr
+            except DaemonError:
+                pass
 
     def history(self, buddy_node_hex: str, after_seq: int) -> list:
         return self.daemon.request("history", **{"from": buddy_node_hex, "seq": after_seq})

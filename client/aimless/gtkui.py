@@ -3059,9 +3059,15 @@ class AimlessWindow(Gtk.Window):
 
         def worker():
             errors = []
+            try:
+                addr = self.session.client.whoami().get("address", "")
+            except Exception:
+                addr = ""
+            if not addr.startswith("tc"):
+                addr = ""  # only tailcat dial addresses are worth propagating
             for info in contacts:
                 try:
-                    self.session.client.set_status(info["pubkey"], info["node"], away)
+                    self.session.client.set_status(info["pubkey"], info["node"], away, addr=addr)
                 except Exception as e:
                     errors.append(f"{info.get('screen', '?')}: {e}")
             return errors
@@ -3133,7 +3139,10 @@ class AimlessWindow(Gtk.Window):
         self._presence_busy = True
 
         def worker():
-            return {p["key"]: p for p in self.session.client.presence(timeout=3)}
+            presence = {p["key"]: p for p in self.session.client.presence(timeout=3)}
+            known = {c["node"] for c in self.session.contacts().values()}
+            self.session.client.sync_contact_addrs(presence, known_nodes=known)
+            return presence
 
         def done(presence):
             self._presence_busy = False
@@ -4905,8 +4914,8 @@ class AimlessApp:
         )
         note = Gtk.Label(label=(
             "Your region is part of your address, so pick it before sharing invites. "
-            "Changing it later changes your address - buddies who added you will need "
-            "your new invite. " + apply_note))
+            "Changing it later changes your address; active buddies pick up the new "
+            "one automatically from your status. " + apply_note))
         note.set_xalign(0)
         note.set_line_wrap(True)
         note.set_opacity(0.7)

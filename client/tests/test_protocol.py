@@ -142,6 +142,40 @@ def test_status_away_none():
     assert st["away"] is None
 
 
+def test_status_carries_addr():
+    alice, bob = _identity(), _identity()
+    bob_hex = bytes(bob.verify_key).hex()
+    payload = protocol.seal_status(alice, bob_hex, "alice", None, 99, addr="tcABC123")
+    st = protocol.open_status(bob, payload)
+    assert st["addr"] == "tcABC123"
+
+
+def test_status_without_addr_is_backward_compatible():
+    alice, bob = _identity(), _identity()
+    bob_hex = bytes(bob.verify_key).hex()
+    payload = protocol.seal_status(alice, bob_hex, "alice", None, 99)
+    st = protocol.open_status(bob, payload)
+    assert "addr" not in st
+
+
+def test_status_addr_cannot_be_tampered():
+    alice, bob = _identity(), _identity()
+    bob_hex = bytes(bob.verify_key).hex()
+    payload = protocol.seal_status(alice, bob_hex, "alice", None, 99, addr="tcABC123")
+    _, curve_sk = crypto.curve_keys(bob)
+    import nacl.public
+    import json
+    inner = nacl.public.SealedBox(nacl.public.PrivateKey(curve_sk)).decrypt(base64.b64decode(payload))
+    obj = json.loads(inner)
+    body = json.loads(obj["body"])
+    body["addr"] = "tcEVIL"  # rewrite the address without re-signing
+    obj["body"] = json.dumps(body, sort_keys=True)
+    reforged = base64.b64encode(
+        nacl.public.SealedBox(nacl.public.PrivateKey(curve_sk)).encrypt(json.dumps(obj).encode())).decode()
+    with pytest.raises(ValueError):
+        protocol.open_status(bob, reforged)
+
+
 # -- room rosters ---------------------------------------------------------
 
 def _member(node):
