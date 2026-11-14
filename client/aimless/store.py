@@ -486,3 +486,107 @@ class Store:
             self.conn.execute("DELETE FROM pending WHERE node=?", (row[0],))
             self.conn.commit()
         return json.loads(self._dec(row[1]))
+
+    # -- backup / restore --------------------------------------------------
+    @property
+    def salt(self) -> bytes:
+        """This store's encryption salt (stored in meta)."""
+        return self._salt()
+
+    def snapshot_to(self, dest_path: str) -> None:
+        """Write a consistent, WAL-safe copy of this store to dest_path."""
+        with self._lock:
+            self.conn.commit()
+            dest = sqlite3.connect(dest_path)
+            try:
+                self.conn.backup(dest)
+            finally:
+                dest.close()
+
+    def merge_from(self, other_path: str) -> None:
+        """Merge another store file that has already been re-keyed to this
+        store's key. Rows dedup by primary key; watermarks/read marks keep the
+        MAX; an existing roster is never overwritten."""
+        other = sqlite3.connect(other_path)
+        try:
+            with self._lock:
+                c = self.conn
+                c.executemany(
+                    "INSERT OR IGNORE INTO conversations(id, dm, members, muted, hidden, created) "
+                    "VALUES(?, ?, ?, ?, ?, ?)",
+                    other.execute("SELECT id, dm, members, muted, hidden, created FROM conversations").fetchall())
+                c.executemany(
+                    "INSERT OR IGNORE INTO messages(id, conv, sender, dir, ts, seq, seqs, text, attachment) "
+                    "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    other.execute("SELECT id, conv, sender, dir, ts, seq, seqs, text, attachment FROM messages").fetchall())
+                c.executemany(
+                    "INSERT INTO read_marks(conv, upto_ts) VALUES(?, ?) "
+                    "ON CONFLICT(conv) DO UPDATE SET upto_ts=MAX(upto_ts, excluded.upto_ts)",
+                    other.execute("SELECT conv, upto_ts FROM read_marks").fetchall())
+                c.executemany("INSERT OR IGNORE INTO pending(node, payload) VALUES(?, ?)",
+                              other.execute("SELECT node, payload FROM pending").fetchall())
+                c.executemany("INSERT OR IGNORE INTO blocked_screens(node, screen) VALUES(?, ?)",
+                              other.execute("SELECT node, screen FROM blocked_screens").fetchall())
+                c.executemany("INSERT OR IGNORE INTO muted_nodes(node) VALUES(?)",
+                              other.execute("SELECT node FROM muted_nodes").fetchall())
+                c.executemany("INSERT OR IGNORE INTO deliveries(node, seq, msg_id, acked) VALUES(?, ?, ?, ?)",
+                              other.execute("SELECT node, seq, msg_id, acked FROM deliveries").fetchall())
+                c.executemany(
+                    "INSERT INTO watermark(peer, seq) VALUES(?, ?) "
+                    "ON CONFLICT(peer) DO UPDATE SET seq=MAX(seq, excluded.seq)",
+                    other.execute("SELECT peer, seq FROM watermark").fetchall())
+                c.commit()
+        finally:
+            other.close()
+
+    def map_attachment_paths(self, fn) -> int:
+        """Apply fn to each message attachment's 'path' and re-encrypt. Used to
+        make attachment paths portable (absolute -> relative on backup, and back
+        on restore). Returns the number of attachments touched."""
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT id, attachment FROM messages WHERE attachment IS NOT NULL").fetchall()
+            n = 0
+            for mid, att_blob in rows:
+                att = json.loads(self._dec(att_blob))
+                if isinstance(att, dict) and "path" in att:
+                    att["path"] = fn(att["path"])
+                    self.conn.execute("UPDATE messages SET attachment=? WHERE id=?",
+                                      (self._enc(json.dumps(att)), mid))
+                    n += 1
+            self.conn.commit()
+        return n
+
+
+def rekey_file(path: str, old_pw: str, new_pw: str, new_salt: bytes) -> None:
+    """Re-encrypt a store file's sensitive fields from old_pw to new_pw+new_salt.
+    This is what makes a data backup portable across machines/passphrases: the
+    store key is scrypt(passphrase, salt), so a raw copy only opens with the same
+    passphrase; re-keying rewrites the ciphertext under the new key."""
+    conn = sqlite3.connect(path)
+    try:
+        row = conn.execute("SELECT value FROM meta WHERE key='salt'").fetchone()
+        old_salt = base64.b64decode(row[0]) if row else nacl.utils.random(16)
+        old_box = nacl.secret.SecretBox(crypto.kdf_key(old_pw, old_salt))
+        new_box = nacl.secret.SecretBox(crypto.kdf_key(new_pw, new_salt))
+
+        def reenc(blob):
+            if blob is None:
+                return None
+            return new_box.encrypt(old_box.decrypt(bytes(blob)))
+
+        for cid, members in conn.execute("SELECT id, members FROM conversations").fetchall():
+            conn.execute("UPDATE conversations SET members=? WHERE id=?", (reenc(members), cid))
+        for mid, text, att in conn.execute("SELECT id, text, attachment FROM messages").fetchall():
+            conn.execute("UPDATE messages SET text=?, attachment=? WHERE id=?",
+                         (reenc(text), reenc(att), mid))
+        for node, screen in conn.execute("SELECT node, screen FROM blocked_screens").fetchall():
+            conn.execute("UPDATE blocked_screens SET screen=? WHERE node=?", (reenc(screen), node))
+        for node, payload in conn.execute("SELECT node, payload FROM pending").fetchall():
+            conn.execute("UPDATE pending SET payload=? WHERE node=?", (reenc(payload), node))
+        conn.execute("INSERT INTO meta(key, value) VALUES('salt', ?) "
+                     "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                     (base64.b64encode(new_salt).decode(),))
+        conn.commit()
+    finally:
+        conn.close()

@@ -3315,6 +3315,7 @@ class AimlessWindow(Gtk.Window):
         except (OSError, ValueError):
             pass
         return {
+            "kind": "identity",
             "identitySeed": bytes(self.session.identity).hex(),
             "nodeSeed": node_seed,
             "tailcatKey": tailcat_key,
@@ -3332,6 +3333,81 @@ class AimlessWindow(Gtk.Window):
         """Restore a bundle onto disk (no daemon restart). Returns the bundle.
         Raises ValueError on a bad passphrase/missing fields."""
         return restore_bundle(path, passphrase, app_passphrase)
+
+    def export_data_backup_to(self, path, backup_pw, include_attachments=True):
+        """Write an encrypted data backup (rooms + history, optionally attachment
+        files). The store is re-keyed to the backup passphrase so it is portable
+        across machines/passphrases. Returns {messages, rooms} counts."""
+        import sqlite3
+        import tempfile
+        from .store import rekey_file
+        app_pw = self.app_ref.passphrase if self.app_ref else None
+        if not app_pw:
+            raise ValueError("app passphrase unavailable")
+        store = self.session.store
+        adir = attachments_dir()
+        tmpdir = tempfile.mkdtemp(prefix="aimless-data-")
+        try:
+            snap = os.path.join(tmpdir, "state.db")
+            store.snapshot_to(snap)
+            sconn = sqlite3.connect(snap)
+            counts = {
+                "messages": sconn.execute("SELECT COUNT(*) FROM messages").fetchone()[0],
+                "rooms": sconn.execute(
+                    "SELECT COUNT(*) FROM conversations WHERE dm=0 AND hidden=0").fetchone()[0],
+            }
+            sconn.close()
+            attachments = {}
+            if include_attachments:
+                # Make attachment paths relative so they survive a different home.
+                snap_store = Store(snap, app_pw)
+                snap_store.map_attachment_paths(lambda p: os.path.relpath(p, adir))
+                snap_store.close()
+                if os.path.isdir(adir):
+                    for root, _, files in os.walk(adir):
+                        for name in files:
+                            fp = os.path.join(root, name)
+                            rel = os.path.relpath(fp, adir)
+                            with open(fp, "rb") as f:
+                                attachments[rel] = base64.b64encode(f.read()).decode("utf-8")
+            rekey_file(snap, app_pw, backup_pw, os.urandom(16))
+            with open(snap, "rb") as f:
+                db_bytes = f.read()
+            keysmod.save_data_bundle(path, backup_pw, db_bytes, attachments, counts)
+            return counts
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+    def restore_data_backup_from(self, path, backup_pw, app_pw):
+        """Merge a data backup into the current store (dedup; rosters kept) and
+        restore attachment files. Returns the backup's counts."""
+        import tempfile
+        from .store import rekey_file
+        data = keysmod.load_data_bundle(path, backup_pw)
+        store = self.session.store
+        adir = attachments_dir()
+        tmpdir = tempfile.mkdtemp(prefix="aimless-restore-")
+        try:
+            tmp_db = os.path.join(tmpdir, "restore.db")
+            with open(tmp_db, "wb") as f:
+                f.write(base64.b64decode(data["db"]))
+            rekey_file(tmp_db, backup_pw, app_pw, store.salt)
+            if data.get("attachments"):
+                rstore = Store(tmp_db, app_pw)
+                rstore.map_attachment_paths(lambda p: os.path.join(adir, p))
+                rstore.close()
+            store.merge_from(tmp_db)
+            for rel, b64 in (data.get("attachments") or {}).items():
+                fp = os.path.normpath(os.path.join(adir, rel))
+                if not fp.startswith(os.path.abspath(adir) + os.sep):
+                    continue  # refuse to write outside the attachments dir
+                os.makedirs(os.path.dirname(fp), exist_ok=True)
+                if not os.path.exists(fp):
+                    with open(fp, "wb") as f:
+                        f.write(base64.b64decode(b64))
+            return data.get("counts") or {}
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
 
     def _daemon_restart(self):
         restart_daemon(self.supervisor, self.app_ref.log if self.app_ref else None)
@@ -3573,6 +3649,56 @@ class AimlessWindow(Gtk.Window):
                 bk_status.set_text(f"backup failed: {e}")
                 self._info_dialog("Backup failed", str(e), parent=dlg)
 
+        def export_data_backup(*_):
+            adlg = Gtk.Dialog(title="Export data backup", transient_for=dlg, modal=True)
+            adlg.add_button("Cancel", Gtk.ResponseType.CANCEL)
+            adlg.add_button("Continue", Gtk.ResponseType.OK)
+            abox = adlg.get_content_area()
+            abox.set_spacing(8)
+            abox.set_border_width(12)
+            att_check = Gtk.CheckButton(label="Include attachment files")
+            att_check.set_active(True)
+            abox.pack_start(att_check, False, False, 0)
+            anote = Gtk.Label(label="Backs up your rooms and message history (not your identity). "
+                                    "You can restore it on this or another machine.")
+            anote.set_xalign(0)
+            anote.set_line_wrap(True)
+            abox.pack_start(anote, False, False, 0)
+            adlg.show_all()
+            aresp = adlg.run()
+            include_att = att_check.get_active()
+            adlg.destroy()
+            if aresp != Gtk.ResponseType.OK:
+                return
+            pw = ask_secret(dlg, "Backup passphrase", confirm=True)
+            if pw is None:
+                return
+            chooser = Gtk.FileChooserDialog(
+                title="Export data backup", transient_for=dlg, action=Gtk.FileChooserAction.SAVE,
+                buttons=("Cancel", Gtk.ResponseType.CANCEL, "Save", Gtk.ResponseType.OK))
+            chooser.set_modal(True)
+            chooser.set_current_name(f"aimless-data-{datetime.now():%Y%m%d}.json")
+            resp = chooser.run()
+            path = chooser.get_filename()
+            chooser.destroy()
+            if resp != Gtk.ResponseType.OK or not path:
+                return
+
+            def worker():
+                return self.export_data_backup_to(path, pw, include_att)
+
+            def done(counts):
+                bk_status.set_text(f"data backup written to {path}")
+                self._info_dialog("Data backup written",
+                                  f"{counts.get('messages', 0)} message(s), "
+                                  f"{counts.get('rooms', 0)} room(s)\n{path}", parent=dlg)
+
+            def fail(e):
+                bk_status.set_text(f"data backup failed: {e}")
+                self._info_dialog("Data backup failed", str(e), parent=dlg)
+
+            run_async(worker, on_done=done, on_error=fail)
+
         def import_backup(*_):
             chooser = Gtk.FileChooserDialog(
                 title="Import backup", transient_for=dlg, action=Gtk.FileChooserAction.OPEN,
@@ -3588,10 +3714,48 @@ class AimlessWindow(Gtk.Window):
                 return
             try:
                 data = keysmod.load_bundle(path, pw)
+            except (ValueError, OSError, KeyError) as e:
+                bk_status.set_text(f"import failed: {e}")
+                self._info_dialog("Import failed", str(e), parent=dlg)
+                return
+            if data.get("kind") == "data":
+                counts = data.get("counts") or {}
+                n_att = len(data.get("attachments") or {})
+                summary = (f"{counts.get('messages', 0)} message(s), "
+                           f"{counts.get('rooms', 0)} room(s)")
+                if n_att:
+                    summary += f", {n_att} attachment file(s)"
+                if not self._confirm(
+                        "Restore this data backup?",
+                        summary + "\n\nMerged into your current history (duplicates skipped).",
+                        parent=dlg):
+                    return
+                app_pw = self.app_ref.passphrase if self.app_ref else None
+                if not app_pw:
+                    self._info_dialog("Passphrase unavailable",
+                                      "Reopen aimless to import a backup.", parent=dlg)
+                    return
+
+                def data_worker():
+                    return self.restore_data_backup_from(path, pw, app_pw)
+
+                def data_done(_counts):
+                    bk_status.set_text("data backup restored")
+                    self._info_dialog("Data restored",
+                                      "Your rooms and history were merged. Quit and reopen "
+                                      "aimless to see them.", parent=dlg)
+
+                def data_fail(e):
+                    bk_status.set_text(f"restore failed: {e}")
+                    self._info_dialog("Restore failed", str(e), parent=dlg)
+
+                run_async(data_worker, on_done=data_done, on_error=data_fail)
+                return
+            try:
                 seed = bytes.fromhex(data.get("identitySeed", ""))
                 if len(seed) != 32:
                     raise ValueError("missing identity seed")
-            except (ValueError, OSError, KeyError) as e:
+            except (ValueError, KeyError) as e:
                 bk_status.set_text(f"import failed: {e}")
                 self._info_dialog("Import failed", str(e), parent=dlg)
                 return
@@ -3625,12 +3789,21 @@ class AimlessWindow(Gtk.Window):
                               "Quit and reopen aimless to use the restored identity.",
                               parent=dlg)
 
+        hint = Gtk.Label(label="Identity: your keys and contacts (back up once). "
+                               "Data: your rooms and message history (back up more often).")
+        hint.set_xalign(0)
+        hint.set_line_wrap(True)
+        hint.get_style_context().add_class("muted")
+        bk.pack_start(hint, False, False, 0)
         bbtn = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        eb = Gtk.Button(label="Export encrypted backup")
+        eb = Gtk.Button(label="Export identity…")
         eb.connect("clicked", export_backup)
-        ib = Gtk.Button(label="Import backup")
+        db = Gtk.Button(label="Export data…")
+        db.connect("clicked", export_data_backup)
+        ib = Gtk.Button(label="Import backup…")
         ib.connect("clicked", import_backup)
         bbtn.pack_start(eb, False, False, 0)
+        bbtn.pack_start(db, False, False, 0)
         bbtn.pack_start(ib, False, False, 0)
         bk.pack_start(bbtn, False, False, 0)
 

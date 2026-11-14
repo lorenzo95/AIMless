@@ -14,6 +14,7 @@ import ipaddress
 import json
 import os
 import re
+import time
 
 import nacl.secret
 import nacl.signing
@@ -146,3 +147,26 @@ def load_bundle(path: str, passphrase: str) -> dict:
     except Exception as e:
         raise ValueError("wrong passphrase or corrupted backup") from e
     return json.loads(data)
+
+
+def save_data_bundle(path: str, passphrase: str, db_bytes: bytes,
+                     attachments: dict = None, counts: dict = None) -> None:
+    """Write an encrypted data backup (rooms + history). The store bytes must
+    already be re-keyed to the backup passphrase."""
+    data = {
+        "kind": "data",
+        "v": BUNDLE_VERSION,
+        "created": int(time.time()),
+        "db": base64.b64encode(db_bytes).decode("utf-8"),
+        "attachments": attachments or {},
+        "counts": counts or {},
+    }
+    save_bundle(path, passphrase, data)
+
+
+def load_data_bundle(path: str, passphrase: str) -> dict:
+    """Decrypt a data backup; raises ValueError if it is not a data bundle."""
+    data = load_bundle(path, passphrase)
+    if data.get("kind") != "data":
+        raise ValueError("not a data backup")
+    return data
