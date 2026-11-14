@@ -3431,12 +3431,38 @@ class AimlessWindow(Gtk.Window):
             for w in (node_entry, node_preview, nbtn):
                 w.set_no_show_all(True)
                 w.hide()
-            tc_note = Gtk.Label(label="The tailcat node key is managed by the daemon; your address "
-                                      "is shared through your invite. Change relays in the relay panel.")
+            tc_note = Gtk.Label(label="Your tailcat address is shared through your invite. "
+                                      "Change relays in the relay panel, or regenerate a fresh "
+                                      "identity below (old invites stop working).")
             tc_note.set_xalign(0.0)
             tc_note.set_line_wrap(True)
             tc_note.get_style_context().add_class("muted")
             node.pack_start(tc_note, False, False, 0)
+
+            def regenerate_tailcat(*_):
+                if not self._confirm(
+                        "Regenerate your tailcat identity?",
+                        "A new node key and address are generated; anyone who saved your old "
+                        "invite must add you again. Your contacts and messages are kept. "
+                        "The daemon restarts now.",
+                        parent=dlg):
+                    return
+                try:
+                    os.remove(os.path.join(paths.daemon_dir(), "tailcat.key"))
+                except OSError:
+                    pass
+                self._daemon_restart()
+                try:
+                    self.session.refresh_node()
+                except Exception:
+                    pass
+                self.messages.sync_sidebar()
+                node_status.set_text(
+                    f"current: {(self.supervisor.status() or {}).get('address', '?')}")
+
+            regen = Gtk.Button(label="Regenerate identity")
+            regen.connect("clicked", regenerate_tailcat)
+            node.pack_start(regen, False, False, 0)
 
         # --- client identity ---
         ident = section("Client identity - your encryption key")
