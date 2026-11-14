@@ -1392,7 +1392,7 @@ class MessagesView(Gtk.Box):
                 delta = len(session.store.messages(conv)) - before.get(conv, 0)
                 if delta > 0:
                     arrived += delta
-                    if self.selected is not thread:
+                    if not self._is_viewing(thread):
                         thread["unread"] += delta
                 self.update_thread_row(conv)
             if arrived:
@@ -2227,7 +2227,7 @@ class MessagesView(Gtk.Box):
                 return
         session.cache.add_recv(conv, node, ev.get("seq", 0), opened["ts"], opened["text"])
         thread["preview"] = opened["text"]
-        if self.selected is thread:
+        if self._is_viewing(thread):
             self.append_bubble(False, opened["text"], opened["ts"],
                                sender=self._sender_label(thread, {"sender": node}))
             self._maybe_scroll()
@@ -2242,6 +2242,15 @@ class MessagesView(Gtk.Box):
             notify_new_message(opened.get("screen") or node[:8], opened["text"])
         if should_play_sound(visible, muted, blocked, self.app.prefs):
             play_notification_sound(sound_enabled(self.app.prefs))
+
+    def _is_viewing(self, thread):
+        """True only if this conversation is actually on screen right now: the
+        window is active, the messages tab is shown and this thread is selected.
+        A window hidden to the tray must not count incoming messages as read -
+        that is what left the tray with no unread badge."""
+        return (thread is not None and self.selected is thread
+                and self.app.is_active()
+                and self.app.stack.get_visible_child_name() == "messages")
 
     def _alert_state(self, conv, node):
         """(visible, muted, blocked) for alerting on a message from ``node``."""
@@ -2350,7 +2359,7 @@ class MessagesView(Gtk.Box):
         thread = self.threads.get(conv)
         if thread is not None:
             thread["preview"] = filename
-            if self.selected is thread:
+            if self._is_viewing(thread):
                 self.append_bubble(False, filename, ts,
                                    sender=self._sender_label(thread, {"sender": node}),
                                    attachment=attachment)

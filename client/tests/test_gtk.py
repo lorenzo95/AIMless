@@ -1619,6 +1619,29 @@ def test_unread_badge_increments(gtk_app):
     assert win.messages.threads[b_node]["widgets"]["badge"] is None
 
 
+def test_unread_counts_when_window_hidden_even_if_thread_selected(gtk_app, monkeypatch):
+    """Regression: with the window hidden to the tray, a reply to the currently
+    selected conversation was treated as read (no unread, hence no tray badge)
+    because the check only looked at self.selected, not window visibility."""
+    app = gtk_app
+    win = app["win"]
+    bob = app["bob"]
+    b_node = app["b_node"]
+    win.stack.set_visible_child_name("messages")
+    win.messages.thread_list.select_row(win.messages.threads[b_node]["row"])
+    assert win.messages.threads[b_node]["unread"] == 0
+    # Hidden to the tray: the window is not the active toplevel, but the last
+    # conversation is still 'selected'.
+    monkeypatch.setattr(win, "is_active", lambda: False)
+    ts = int(time.time() * 1000)
+    bob.send(app["session"].client.pubkey_hex, app["a_node"], "reply while hidden", ts)
+
+    def unread_counted():
+        return win.messages.threads[b_node]["unread"] >= 1
+    assert _pump(win, unread_counted, timeout=30), \
+        f"unread not counted while hidden: {win.messages.threads[b_node]['unread']}"
+
+
 def test_linkify_plain_text_is_escaped_only():
     assert gtkui.linkify("hello <world> & friends") == \
         GLib.markup_escape_text("hello <world> & friends")
