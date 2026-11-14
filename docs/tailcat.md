@@ -203,3 +203,7 @@ unaffected. Verified end-to-end over public DERP by
 - **Self-hosted relays** use region 900 and embed their hostname(s) in the address
   (comma-separated for several). A bad relay config can't lock you out: the app
   offers "Reset relay & retry" if the daemon won't start.
+- **Relay status is real.** The daemon probes the configured relay (a short TCP
+  dial to port 443) every ~20s, so a self-hosted host that doesn't resolve or a
+  dead relay shows as "relay not reachable" (with the reason on hover) instead of
+  a false "online". tailcat itself doesn't expose its DERP connection state.
