@@ -658,6 +658,10 @@ def relay_tooltip(st):
         base += "\nRelay servers: " + ", ".join(nodes[:3])
         if len(nodes) > 3:
             base += f" (+{len(nodes) - 3} more)"
+    for p in st.get("peer_details") or []:
+        if p.get("error"):
+            base += "\nRelay problem: " + p["error"]
+            break
     return base + "\nYour full address is in your invite (Contacts -> Copy)."
 
 
@@ -724,7 +728,7 @@ def _self_state(st):
     total = st.get("peers_total", 0)
     if is_tailcat(st):
         if up <= 0:
-            return C["away"], "connecting - relay not reachable yet"
+            return C["away"], "relay not reachable"
         return C["online"], "online"
     if up <= 0:
         return C["away"], "connecting - no Yggdrasil peers yet"

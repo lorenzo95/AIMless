@@ -90,6 +90,10 @@ type TailcatNode struct {
 	onPacket  func(from PeerID, payload []byte)
 	onPathUp  func(PeerID)
 	closeOnce sync.Once
+	probeMu   sync.Mutex
+	probeUp   bool
+	probeErr  string
+	stopCh    chan struct{}
 }
 
 // NewTransport constructs the tailcat transport. peers/listenURLs are Yggdrasil
@@ -153,6 +157,9 @@ func newTailcatNode(datadir string, region *tailcfg.DERPRegion, log *aimlessLogg
 	if region == nil && relay.RegionID == 0 {
 		t.persistAutoRegion()
 	}
+	t.stopCh = make(chan struct{})
+	t.probeUp = true // optimistic until the first probe completes
+	go t.probeRelayLoop()
 	return t, nil
 }
 
@@ -272,6 +279,9 @@ func (t *TailcatNode) persistAutoRegion() {
 
 func (t *TailcatNode) Stop() {
 	t.closeOnce.Do(func() {
+		if t.stopCh != nil {
+			close(t.stopCh)
+		}
 		t.mu.Lock()
 		for _, c := range t.conns {
 			c.Close()
@@ -499,7 +509,72 @@ func (t *TailcatNode) SetPeers(peers []string) ([]string, []string, map[string]s
 }
 
 func (t *TailcatNode) PeerStatuses() []peerStatus {
-	return []peerStatus{{URI: t.relayLabel(), Up: true}}
+	t.probeMu.Lock()
+	up, errStr := t.probeUp, t.probeErr
+	t.probeMu.Unlock()
+	ps := peerStatus{URI: t.relayLabel(), Up: up}
+	if !up && errStr != "" {
+		ps.Error = errStr
+	}
+	return []peerStatus{ps}
+}
+
+// probeRelayLoop periodically checks whether the configured DERP relay is
+// reachable, so the UI can show a dead relay instead of a false "online".
+func (t *TailcatNode) probeRelayLoop() {
+	t.probeRelay()
+	ticker := time.NewTicker(20 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-t.stopCh:
+			return
+		case <-ticker.C:
+			t.probeRelay()
+		}
+	}
+}
+
+func (t *TailcatNode) probeRelay() {
+	up, errStr := t.relayReachable()
+	t.probeMu.Lock()
+	t.probeUp = up
+	t.probeErr = errStr
+	t.probeMu.Unlock()
+}
+
+// relayReachable probes the configured relay with a short TCP dial (DERP listens
+// on 443): the self-hosted hostname(s), or the current public region's nodes.
+// tailcat/magicsock does not expose its DERP connection state, so this is how we
+// tell a dead relay from a live one.
+func (t *TailcatNode) relayReachable() (bool, string) {
+	t.mu.Lock()
+	hostname := t.relay.Hostname
+	t.mu.Unlock()
+	var hosts []string
+	if hostname != "" {
+		for _, h := range strings.Split(hostname, ",") {
+			if h = strings.TrimSpace(h); h != "" {
+				hosts = append(hosts, h)
+			}
+		}
+	} else {
+		cur, _ := t.Regions()
+		hosts = cur.Nodes
+	}
+	if len(hosts) == 0 {
+		return true, "" // nothing to probe (e.g. injected region); assume up
+	}
+	var lastErr string
+	for _, h := range hosts {
+		conn, err := net.DialTimeout("tcp", net.JoinHostPort(h, "443"), 3*time.Second)
+		if err == nil {
+			conn.Close()
+			return true, ""
+		}
+		lastErr = err.Error()
+	}
+	return false, lastErr
 }
 
 func (t *TailcatNode) MTU() int { return 0 } // TCP: no datagram MTU ceiling

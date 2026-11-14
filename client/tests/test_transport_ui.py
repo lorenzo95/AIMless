@@ -307,3 +307,14 @@ def test_relay_cfg_equal():
     assert gtkui.relay_cfg_equal({"hostname": "a.example", "derpmap_url": ""},
                                  {"hostname": "a.example"})
     assert not gtkui.relay_cfg_equal({"derpmap_url": "http://x/m"}, {})
+
+
+def test_relay_tooltip_surfaces_relay_error():
+    st = {"region": {"name": "Self-hosted relay", "code": "custom"},
+          "peer_details": [{"up": False, "error": "no such host"}]}
+    assert "Relay problem: no such host" in gtkui.relay_tooltip(st)
+
+
+def test_self_state_tailcat_relay_down():
+    _, text = gtkui._self_state({"transport": "tailcat", "peers_up": 0, "peers_total": 1})
+    assert text == "relay not reachable"
