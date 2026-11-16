@@ -1,6 +1,15 @@
 package main
 
-import "crypto/ed25519"
+import (
+	"crypto/ed25519"
+	"errors"
+)
+
+// errTransportPending reports that the transport is still establishing a
+// connection in the background. It is a transient "not yet", not a failure:
+// the payload is retained and the presence/retry loops send it once the path
+// is up, so API handlers must not surface it to the user as an error.
+var errTransportPending = errors.New("transport connection in progress")
 
 // PeerID is the 32-byte node identifier used throughout the daemon (mail,
 // presence, api, attachments). It is an alias for ed25519.PublicKey so existing

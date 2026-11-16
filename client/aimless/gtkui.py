@@ -2232,11 +2232,16 @@ class MessagesView(Gtk.Box):
                 return
         session.cache.add_recv(conv, node, ev.get("seq", 0), opened["ts"], opened["text"])
         thread["preview"] = opened["text"]
-        if self._is_viewing(thread):
+        # The chat view belongs to the selected thread, so the bubble must be
+        # appended even while the window is hidden or another tab is showing.
+        # Gating this on _is_viewing left the message in the sidebar preview
+        # but out of the chat until the thread was re-selected. Whether it
+        # counts as read is a separate question.
+        if self.selected is thread:
             self.append_bubble(False, opened["text"], opened["ts"],
                                sender=self._sender_label(thread, {"sender": node}))
             self._maybe_scroll()
-        else:
+        if not self._is_viewing(thread):
             thread["unread"] += 1
         # Sort once the unread count is known: the conversation that just got
         # a message belongs on top.
@@ -2378,12 +2383,12 @@ class MessagesView(Gtk.Box):
         thread = self.threads.get(conv)
         if thread is not None:
             thread["preview"] = filename
-            if self._is_viewing(thread):
+            if self.selected is thread:
                 self.append_bubble(False, filename, ts,
                                    sender=self._sender_label(thread, {"sender": node}),
                                    attachment=attachment)
                 self._maybe_scroll()
-            else:
+            if not self._is_viewing(thread):
                 thread["unread"] += 1
             self._apply_order()
             self.update_thread_row(conv)

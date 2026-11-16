@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -366,7 +367,10 @@ func (s *APIServer) handleSetStatus(conn *apiConn, req apiMessage) {
 		return
 	}
 	seq, err := s.presence.SetStatus(ed25519.PublicKey(keyBytes), payload)
-	if err != nil {
+	// A pending transport is not a failure: SetStatus stored the payload and
+	// the presence loop sends it once the path is up. Reporting it made the
+	// activity log fill with "setstatus failed: connection in progress".
+	if err != nil && !errors.Is(err, errTransportPending) {
 		s.replyReq(conn, req, apiMessage{Op: "error", Error: "setstatus failed: " + err.Error()})
 		return
 	}

@@ -80,6 +80,12 @@ def main():
             {"node": wb["key"], "pubkey": bytes(ib.verify_key).hex(), "screen": "bob", "addr": wb["address"]},
             {"node": wc["key"], "pubkey": bytes(ic.verify_key).hex(), "screen": "carol", "addr": wc["address"]},
         ]
+        # Forming a room registers every member's dial address with each daemon,
+        # exactly as the client does via add_contact when a roster is sent or
+        # accepted. A receiver needs this to attribute an inbound connection.
+        for d in (da, db, dc):
+            for m in members:
+                d.request("watch", to=m["node"], addr=m["addr"])
         conv = protocol.room_id([m["node"] for m in members])
         ca, cb = Client(da, ia, "alice"), Client(db, ib, "bob")
         print("3 tailcat daemons up; room", conv[:16])

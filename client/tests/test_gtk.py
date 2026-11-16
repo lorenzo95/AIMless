@@ -1663,6 +1663,28 @@ def test_unread_cleared_when_window_reactivated(gtk_app, monkeypatch):
         f"unread not cleared on reactivate: {win.messages.threads[b_node]['unread']}"
 
 
+def test_message_shown_in_chat_while_window_hidden(gtk_app, monkeypatch):
+    """Regression: a message arriving while the window was hidden updated the
+    sidebar preview but never the chat view, because the bubble was appended
+    only when the window was active. It appeared only after re-selecting the
+    thread. The bubble belongs to the selected thread regardless of focus;
+    unread is still counted so the tray badge keeps working."""
+    app = gtk_app
+    win = app["win"]
+    bob = app["bob"]
+    b_node = app["b_node"]
+    win.stack.set_visible_child_name("messages")
+    win.messages.thread_list.select_row(win.messages.threads[b_node]["row"])
+    monkeypatch.setattr(win, "is_active", lambda: False)
+    ts = int(time.time() * 1000)
+    bob.send(app["session"].client.pubkey_hex, app["a_node"], "visible while hidden", ts)
+
+    def shown():
+        return "visible while hidden" in all_texts(win.messages.conversation)
+    assert _pump(win, shown, timeout=30), "message missing from chat view while hidden"
+    assert win.messages.threads[b_node]["unread"] >= 1, "unread not counted while hidden"
+
+
 def test_linkify_plain_text_is_escaped_only():
     assert gtkui.linkify("hello <world> & friends") == \
         GLib.markup_escape_text("hello <world> & friends")
