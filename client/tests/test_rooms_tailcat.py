@@ -83,3 +83,27 @@ def test_send_room_yggdrasil_has_no_addr():
     client.send_room(members, conv, "hi", 1)
     watches = [kw for op, kw in fake.requests if op == "watch"]
     assert watches == []  # nothing to register without addresses
+
+
+def test_register_room_members_admits_non_buddies():
+    """A room can include people who are not buddies. The tailcat daemon admits
+    only registered peers, so learning a roster must register every member's
+    dial address or their handshake is ignored and nothing they send arrives."""
+    me, a, b, my_node, members = _members()
+    fake = FakeDaemon(my_node)
+    client = Client(fake, me, "me")
+    client.register_room_members(members)
+    watches = {kw["to"]: kw.get("addr") for op, kw in fake.requests if op == "watch"}
+    assert watches == {"bb" * 32: "tcA", "cc" * 32: "tcB"}  # self skipped
+
+
+def test_register_room_members_skips_missing_addr_and_self():
+    me, a, b, my_node, members = _members()
+    fake = FakeDaemon(my_node)
+    client = Client(fake, me, "me")
+    client.register_room_members([
+        {"node": my_node, "addr": "tcME"},          # self: never watch ourselves
+        {"node": "bb" * 32, "pubkey": "x"},          # no addr: nothing to admit
+        {"node": "", "addr": "tcA"},                 # no node
+    ])
+    assert [kw for op, kw in fake.requests if op == "watch"] == []

@@ -612,6 +612,38 @@ def test_gui_room_create_send_receive(gtk_app):
     assert "hello room" in texts
 
 
+def test_gui_room_message_from_non_buddy_member(gtk_app):
+    """Regression: a room member who is not a buddy could not write to the room.
+    The tailcat daemon admits only registered peers, so their handshake was
+    ignored; and the GUI filed anything from a non-buddy as a stranger request.
+    A verified member of a room we are already in is accepted directly."""
+    app = gtk_app
+    win = app["win"]
+    session = app["session"]
+    carol_identity = crypto.new_identity()
+    c_node = "cd" * 32
+    members = [
+        {"node": session.self_node, "pubkey": session.client.pubkey_hex, "screen": "Alice"},
+        {"node": c_node, "pubkey": bytes(carol_identity.verify_key).hex(), "screen": "Carol"},
+    ]
+    conv = protocol.room_id([m["node"] for m in members])
+    session.cache.ensure_room(conv, {m["node"]: m for m in members})
+    win.messages.sync_sidebar()
+    buddy_nodes = {i["node"] for i in session.contacts().values()}
+    assert c_node not in buddy_nodes, "Carol must not be a buddy for this test to mean anything"
+
+    ts = int(time.time() * 1000)
+    payload = protocol.seal_message(carol_identity, session.client.pubkey_hex,
+                                    "carol speaks", ts, screen="Carol",
+                                    conv=conv, members=members)
+    win.messages.incoming({"op": "recv", "from": c_node, "seq": 1, "payload": payload})
+    pump(0.3)
+
+    texts = [m["text"] for m in session.cache.msgs(conv)]
+    assert texts == ["carol speaks"], "room member's message was not stored in the room"
+    assert not session.cache.pending(), "a room member must not be filed as a stranger request"
+
+
 def test_gui_request_accept_and_deny(gtk_app, tmp_path, monkeypatch):
     app = gtk_app
     win = app["win"]

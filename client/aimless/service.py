@@ -78,5 +78,9 @@ class Sync:
         members = protocol.valid_room_members(conv, opened.get("members"))
         if members:
             self.store.ensure_room(conv, {m["node"]: m for m in members.values()})
+            # A room can include non-buddies, and the tailcat transport admits
+            # only registered peers: admit the whole roster or their messages
+            # never reach us at all.
+            self.client.register_room_members(members.values())
         new = self.store.ingest(conv, peer, seq, opened["ts"], opened["text"])
         return conv, new

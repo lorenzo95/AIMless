@@ -2205,7 +2205,22 @@ class MessagesView(Gtk.Box):
                 self._maybe_scroll()
             return
         contact_nodes = {info["node"] for info in session.contacts().values()}
-        if node not in contact_nodes:
+        # A room can include people who are not buddies. Admit the whole roster
+        # to the daemon: the tailcat transport accepts only registered peers, so
+        # otherwise a non-buddy member's handshake is ignored and nothing they
+        # send ever arrives.
+        if roster:
+            run_async(lambda: session.client.register_room_members(roster.values()))
+        # A verified member of a room we are already in may write to it without
+        # being a buddy: the roster hashes to the conversation id, and the sender
+        # proves possession of that member's identity key. Membership is checked
+        # against the roster we stored, not the one offered, and the room must
+        # already exist so a stranger cannot create conversations out of nowhere.
+        stored = session.cache.members(conv) if roster else {}
+        member_ok = (bool(roster) and session.cache.is_room(conv)
+                     and node in stored
+                     and stored[node].get("pubkey") == opened.get("from"))
+        if node not in contact_nodes and not member_ok:
             if session.cache.is_muted(node):
                 return
             # A stranger's message stays out of our conversations: without a
@@ -2222,7 +2237,7 @@ class MessagesView(Gtk.Box):
         if roster:
             session.cache.ensure_room(conv, {
                 m["node"]: {"node": m["node"], "pubkey": m["pubkey"],
-                            "screen": m.get("screen", "")}
+                            "screen": m.get("screen", ""), "addr": m.get("addr", "")}
                 for m in roster.values()}, created=opened["ts"])
         thread = self.threads.get(conv)
         if thread is None:

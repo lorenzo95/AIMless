@@ -292,6 +292,25 @@ class Client:
     def add_contact(self, buddy_node_hex: str, addr: str = "") -> dict:
         return self.daemon.request("watch", to=buddy_node_hex, addr=addr)
 
+    def register_room_members(self, members) -> None:
+        """Admit every roster member to the daemon so they can reach us.
+
+        A room can include people who are not buddies. The tailcat transport
+        admits only registered peers, so without this a non-buddy member's
+        handshake is ignored and their messages never arrive at all. The roster
+        carries each member's dial address. Idempotent, and a no-op for
+        Yggdrasil, where there are no addresses and peers route by node key.
+        """
+        my_node = self.node_key()
+        for m in members or []:
+            node, addr = m.get("node"), m.get("addr") or ""
+            if not node or not addr or node == my_node:
+                continue
+            try:
+                self.add_contact(node, addr)
+            except DaemonError:
+                pass
+
     def block(self, node_hex: str) -> dict:
         return self.daemon.request("block", to=node_hex)
 
