@@ -5,9 +5,11 @@ package main
 import (
 	"bytes"
 	"encoding/binary"
+	"encoding/hex"
 	"testing"
 	"time"
 
+	"github.com/tailscale/tailcat"
 	"tailscale.com/tailcfg"
 	"tailscale.com/tstest/integration"
 )
@@ -228,6 +230,40 @@ func TestTailcatAddrPersistence(t *testing.T) {
 		t.Fatalf("SendMsg after restart: %v", err)
 	}
 	tcWaitPayload(t, delivered, "second", 20*time.Second)
+}
+
+func TestTailcatAddrForNormalisesLegacyAddress(t *testing.T) {
+	// Before the server key was derived, a published address carried the
+	// identity as the server key. Such stored addresses must keep working: the
+	// dialer recomputes the current server key from the PSK the address holds,
+	// so nobody has to re-exchange invites.
+	reg := tcRegion(t)
+	nodeA, _ := tcMail(t, t.TempDir(), reg)
+	nodeB, _ := tcMail(t, t.TempDir(), reg)
+
+	current := nodeB.Address()
+	ci, err := tailcat.ParseAddr(tailcat.Addr(current))
+	if err != nil {
+		t.Fatalf("ParseAddr: %v", err)
+	}
+	np, err := nodePublicFromPeerID(nodeB.Pub())
+	if err != nil {
+		t.Fatalf("nodePublicFromPeerID: %v", err)
+	}
+	if ci.ServerPublic.NodePublic == np {
+		t.Fatal("server key must differ from the identity key")
+	}
+	ci.ServerPublic = tailcat.NodePublic{NodePublic: np}
+	legacy := string(ci.Addr())
+
+	nodeA.AddPeerAddr(nodeB.Pub(), legacy)
+	if got := nodeA.addrFor(hex.EncodeToString(nodeB.Pub())); got != current {
+		t.Errorf("legacy address not normalised:\n got %s\nwant %s", got, current)
+	}
+	nodeA.AddPeerAddr(nodeB.Pub(), current)
+	if got := nodeA.addrFor(hex.EncodeToString(nodeB.Pub())); got != current {
+		t.Errorf("current address changed:\n got %s\nwant %s", got, current)
+	}
 }
 
 func TestTailcatRelayConfig(t *testing.T) {

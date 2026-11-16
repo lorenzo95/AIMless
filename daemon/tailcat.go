@@ -106,21 +106,19 @@ type TailcatNode struct {
 	regionByHost   map[string]RegionInfo // DERP node hostname -> region (current-region lookup)
 	regionsCacheAt time.Time
 
-	mu          sync.Mutex
-	addrs       map[string]string          // peer hex -> tailcat address (dial target)
-	clients     map[string]*tailcat.Client // peer hex -> our outbound client
-	conns       map[string]net.Conn        // peer hex -> live bidirectional connection
-	connects    map[string]chan struct{}   // peer hex -> in-flight/last connection attempt
-	clientKeys  map[string]string          // derived client key hex -> contact identity hex
-	legacyPeers map[string]bool            // peers that admit only our identity key
-	hmu         sync.RWMutex
-	onPacket    func(from PeerID, payload []byte)
-	onPathUp    func(PeerID)
-	closeOnce   sync.Once
-	probeMu     sync.Mutex
-	probeUp     bool
-	probeErr    string
-	stopCh      chan struct{}
+	mu        sync.Mutex
+	addrs     map[string]string          // peer hex -> tailcat address (dial target)
+	clients   map[string]*tailcat.Client // peer hex -> our outbound client
+	conns     map[string]net.Conn        // peer hex -> live bidirectional connection
+	connects  map[string]chan struct{}   // peer hex -> in-flight/last connection attempt
+	hmu       sync.RWMutex
+	onPacket  func(from PeerID, payload []byte)
+	onPathUp  func(PeerID)
+	closeOnce sync.Once
+	probeMu   sync.Mutex
+	probeUp   bool
+	probeErr  string
+	stopCh    chan struct{}
 }
 
 // NewTransport constructs the tailcat transport. peers/listenURLs are Yggdrasil
@@ -165,18 +163,16 @@ func newTailcatNode(datadir string, region *tailcfg.DERPRegion, log *aimlessLogg
 		derpMapURL = "" // injected region (tests): no DERP map fetch
 	}
 	t := &TailcatNode{
-		datadir:     datadir,
-		priv:        priv,
-		psk:         psk,
-		logger:      log,
-		relay:       relay,
-		derpMapURL:  derpMapURL,
-		addrs:       make(map[string]string),
-		clients:     make(map[string]*tailcat.Client),
-		conns:       make(map[string]net.Conn),
-		connects:    make(map[string]chan struct{}),
-		clientKeys:  make(map[string]string),
-		legacyPeers: make(map[string]bool),
+		datadir:    datadir,
+		priv:       priv,
+		psk:        psk,
+		logger:     log,
+		relay:      relay,
+		derpMapURL: derpMapURL,
+		addrs:      make(map[string]string),
+		clients:    make(map[string]*tailcat.Client),
+		conns:      make(map[string]net.Conn),
+		connects:   make(map[string]chan struct{}),
 	}
 	if err := t.startServer(region, regionID, derpMapURL); err != nil {
 		return nil, err
@@ -198,7 +194,7 @@ func newTailcatNode(datadir string, region *tailcfg.DERPRegion, log *aimlessLogg
 func (t *TailcatNode) startServer(region *tailcfg.DERPRegion, regionID int, derpMapURL string) error {
 	logf := func(format string, args ...any) { t.logger.Printf(format, args...) }
 	t.server = &tailcat.Server{
-		Key:          t.priv,
+		Key:          t.serverKey(),
 		PresharedKey: t.psk,
 		Region:       region,
 		RegionID:     tailcfg.DERPRegionID(regionID),
@@ -362,31 +358,40 @@ func (t *TailcatNode) AddPeerAddr(id PeerID, addr string) {
 	t.mu.Lock()
 	t.addrs[peerHex] = addr
 	t.mu.Unlock()
-	np, err := nodePublicFromPeerID(id)
-	if err != nil {
-		return
+	if np, err := nodePublicFromPeerID(id); err == nil {
+		t.server.AddAllowedClient(np)
 	}
-	t.server.AddAllowedClient(np)
-	// Admit the key this peer will use for its outbound client to us, and map
-	// it back to its identity so an accepted conn is attributed correctly. It
-	// derives from our own PSK and the peer's identity, so we need no address
-	// from them - only the identity we already have.
-	cp := clientKeyFor(t.psk, np)
-	if cp.IsZero() {
-		return
-	}
-	ck := cp.Public()
-	t.server.AddAllowedClient(ck)
-	raw := ck.Raw32()
-	t.mu.Lock()
-	t.clientKeys[hex.EncodeToString(raw[:])] = peerHex
-	t.mu.Unlock()
 }
 
 func (t *TailcatNode) addrFor(peerHex string) string {
 	t.mu.Lock()
-	defer t.mu.Unlock()
-	return t.addrs[peerHex]
+	addr := t.addrs[peerHex]
+	t.mu.Unlock()
+	if addr == "" {
+		return ""
+	}
+	// Addresses published before the server key was derived carry the peer's
+	// identity as the server key. Recompute the current form from the PSK the
+	// address already carries, so old stored addresses keep working without
+	// re-exchanging invites.
+	ci, err := tailcat.ParseAddr(tailcat.Addr(addr))
+	if err != nil {
+		return addr
+	}
+	pid, err := peerIDFromHex(peerHex)
+	if err != nil {
+		return addr
+	}
+	np, err := nodePublicFromPeerID(pid)
+	if err != nil || ci.ServerPublic.NodePublic != np {
+		return addr
+	}
+	sk := deriveKey(ci.PresharedKey, serverKeyLabel)
+	if sk.IsZero() {
+		return addr
+	}
+	ci.ServerPublic = tailcat.NodePublic{NodePublic: sk.Public()}
+	return string(ci.Addr())
 }
 
 // peerKeyHex extracts the authenticated peer node key from an accepted conn.
@@ -397,14 +402,6 @@ func (t *TailcatNode) peerKeyHex(c net.Conn) string {
 			s := strings.TrimPrefix(kv, "TAILCAT_PEER_KEY=")
 			s = strings.TrimPrefix(s, "nodekey:")
 			if raw, err := hex.DecodeString(s); err == nil && len(raw) == 32 {
-				// A peer's outbound client uses a derived per-pair key; map it
-				// back to the contact identity the rest of the daemon uses.
-				t.mu.Lock()
-				identity, ok := t.clientKeys[s]
-				t.mu.Unlock()
-				if ok {
-					return identity
-				}
 				return s
 			}
 		}
@@ -533,31 +530,11 @@ func (t *TailcatNode) connectPeer(peerHex, addr string, done chan struct{}) {
 	cl := t.clients[peerHex]
 	t.mu.Unlock()
 	if cl == nil {
-		cl = t.newClient(addr, t.outboundKey(peerHex))
+		cl = t.newClient(addr, t.priv)
 	}
 	pctx, pcancel := context.WithTimeout(context.Background(), tailcatPingTimeout)
 	_, err := cl.Ping(pctx)
 	pcancel()
-	if err != nil {
-		// A peer that predates derived client keys admits only our identity
-		// key. Try that once before giving up, and remember it only if it
-		// works, so a transient failure does not downgrade the pair.
-		t.mu.Lock()
-		legacy := t.legacyPeers[peerHex]
-		t.mu.Unlock()
-		if !legacy {
-			cl.Close()
-			cl = t.newClient(addr, t.priv)
-			p2, c2 := context.WithTimeout(context.Background(), tailcatPingTimeout)
-			_, err = cl.Ping(p2)
-			c2()
-			if err == nil {
-				t.mu.Lock()
-				t.legacyPeers[peerHex] = true
-				t.mu.Unlock()
-			}
-		}
-	}
 	var c net.Conn
 	if err == nil {
 		// Re-dial the warm client rather than rebuilding: each dial sends a
@@ -773,28 +750,6 @@ func (t *TailcatNode) newClient(addr string, k key.NodePrivate) *tailcat.Client 
 	}
 }
 
-// outboundKey is the node key we dial a peer with: a per-pair derived key so it
-// cannot collide with our server's key on the relay, or our identity key for a
-// peer that admits only that one.
-//
-// It derives from the PEER's pre-shared key (which their address carries) and
-// our own identity, so the peer can recompute it from its own PSK and our
-// identity without needing our address.
-func (t *TailcatNode) outboundKey(peerHex string) key.NodePrivate {
-	t.mu.Lock()
-	legacy := t.legacyPeers[peerHex]
-	t.mu.Unlock()
-	if !legacy {
-		ci, err := tailcat.ParseAddr(tailcat.Addr(t.addrFor(peerHex)))
-		if err == nil && !ci.PresharedKey.IsZero() {
-			if k := clientKeyFor(ci.PresharedKey, t.priv.Public()); !k.IsZero() {
-				return k
-			}
-		}
-	}
-	return t.priv
-}
-
 func peerIDFromHex(peerHex string) (PeerID, error) {
 	b, err := hex.DecodeString(peerHex)
 	if err != nil {
@@ -813,34 +768,36 @@ func nodePublicFromPeerID(id PeerID) (key.NodePublic, error) {
 	return key.NodePublicFromRaw32(mem.B(id)), nil
 }
 
-// clientKeyLabel domain-separates the derived client key from any other use of
-// the pre-shared key.
-const clientKeyLabel = "aimless-tc-client-v1"
+// serverKeyLabel domain-separates the server's listening key from the identity
+// key and from any other use of the pre-shared key.
+const serverKeyLabel = "aimless-tc-server-v1"
 
-// clientKeyFor derives the node key a dialer uses toward a server, from the
-// SERVER's pre-shared key and the DIALER's public identity.
-//
-// Our server and every outbound client would otherwise share one node key, and
-// a DERP relay delivers to only the most recently active connection for a key
-// (derper's lastWriterIsActive). On a single relay - the usual self-hosted case
-// - the server and the clients shadow each other: the server's meow ack keeps
-// stealing delivery from the client waiting for the meowed reply and the
-// WireGuard handshake response, so the pair never comes up. Giving each
-// directed pair its own key removes the collision entirely.
-//
-// No protocol change and no address change: the dialer reads the server's PSK
-// from the address it is dialing, and the server recomputes the same key from
-// its own PSK plus the contact identity it already knows. The PSK is a secret
-// by design (it travels inside the address), so this exposes nothing new.
-func clientKeyFor(serverPSK tailcat.PresharedKey, dialerPub key.NodePublic) key.NodePrivate {
-	pub := dialerPub.Raw32()
-	raw, err := hkdf.Key(sha256.New, serverPSK[:], []byte(clientKeyLabel), clientKeyLabel+string(pub[:]), 32)
+// deriveKey expands a pre-shared key into a distinct node key. The PSK is
+// already a secret carried inside the tailcat address, so this exposes nothing
+// new, and it is stable across restarts so the published address stays usable.
+func deriveKey(psk tailcat.PresharedKey, label string) key.NodePrivate {
+	raw, err := hkdf.Key(sha256.New, psk[:], []byte(label), label, 32)
 	if err != nil || len(raw) != 32 {
 		return key.NodePrivate{}
 	}
 	var b [32]byte
 	copy(b[:], raw)
 	return key.NodePrivateFromRaw32(mem.B(b[:]))
+}
+
+// serverKey is the node key our tailcat.Server listens on.
+//
+// It must differ from the identity key our outbound clients use: a DERP relay
+// delivers only to the most recently active connection for a key, so a server
+// sharing its key with our clients keeps stealing delivery from the client
+// waiting for the meowed reply and the WireGuard handshake response. Listening
+// on a derived key leaves the identity key to the clients, and inbound
+// connections still carry the peer's identity key, so attribution is unchanged.
+func (t *TailcatNode) serverKey() key.NodePrivate {
+	if k := deriveKey(t.psk, serverKeyLabel); !k.IsZero() {
+		return k
+	}
+	return t.priv
 }
 
 // --- relay configuration ---
