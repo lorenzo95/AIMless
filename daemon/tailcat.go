@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -36,16 +37,39 @@ import (
 // Reconnect follows the Phase 0 spike finding: a stale session cannot be revived
 // by re-Ping alone, so on any connection error we evict the peer's Client and
 // connection; the next Send recreates a fresh Client with the same persistent
-// key. Dials block to their context deadline on offline peers, so Send uses a
-// short timeout and mail's retryLoop provides the backoff cadence.
+// key. The meow handshake and dial run in the background so Send never blocks
+// on them: the handshake gets its own budget (tailcat resends the meow every
+// second because DERP drops packets sent to a key whose relay connection is
+// still coming up), while the dial stays short and mail's retryLoop provides
+// the retry cadence.
+//
+// Our Server and our outbound Clients share one node key, and a DERP relay
+// delivers to only the most recently active connection for a key, so on a
+// single self-hosted relay the server and a client can shadow each other.
+// Tearing the handshake down early (the old 2s budget) restarted that shadowing
+// on every attempt, which made a custom relay look permanently offline.
 
 const tailcatKeyFile = "tailcat.key"
 
 // tailcatPort is the TCP port AIMless speaks inside the tunnel.
 const tailcatPort = 1
 
-// tailcatDialTimeout bounds a dial to an offline peer (DERP is not a mailbox).
+// tailcatDialTimeout bounds the TCP dial inside an already-handshaked tunnel.
+// It stays short so a failed attempt is retried quickly (mail's retryLoop and
+// presence provide the cadence); a dial that fails means a stale session.
 const tailcatDialTimeout = 2 * time.Second
+
+// tailcatDialAttempts is how many times a warm client is re-dialled before the
+// whole client is rebuilt. Each dial sends a fresh WireGuard initiation, so we
+// retry at our own cadence instead of waiting for WireGuard's 5s retransmit.
+const tailcatDialAttempts = 2
+
+// tailcatPingTimeout bounds the meow handshake, separately from the dial.
+// tailcat resends the meow every second because DERP drops packets sent to a
+// key whose relay connection is still coming up, so the handshake needs more
+// than the old 2s all-in-one deadline: cutting it short tore the client down
+// just as it became usable, and the peer never came online on a custom relay.
+const tailcatPingTimeout = 6 * time.Second
 
 // defaultDERPMapURL is the official Tailscale DERP map (~28 regions). The
 // tailcat.dev default is only a 4-region subset; the official relays accept
@@ -85,7 +109,7 @@ type TailcatNode struct {
 	addrs     map[string]string          // peer hex -> tailcat address (dial target)
 	clients   map[string]*tailcat.Client // peer hex -> our outbound client
 	conns     map[string]net.Conn        // peer hex -> live bidirectional connection
-	dialMu    sync.Mutex                 // serializes check-and-dial
+	connects  map[string]chan struct{}   // peer hex -> in-flight/last connection attempt
 	hmu       sync.RWMutex
 	onPacket  func(from PeerID, payload []byte)
 	onPathUp  func(PeerID)
@@ -147,6 +171,7 @@ func newTailcatNode(datadir string, region *tailcfg.DERPRegion, log *aimlessLogg
 		addrs:      make(map[string]string),
 		clients:    make(map[string]*tailcat.Client),
 		conns:      make(map[string]net.Conn),
+		connects:   make(map[string]chan struct{}),
 	}
 	if err := t.startServer(region, regionID, derpMapURL); err != nil {
 		return nil, err
@@ -371,13 +396,19 @@ func (t *TailcatNode) registerConn(peerHex string, c net.Conn) {
 	t.firePathUp(peerHex)
 }
 
+// evictConn drops a peer's connection and client. When c is a specific conn
+// that is no longer the current one, only that stale conn is closed: its death
+// says nothing about the client we have since rebuilt, and closing that would
+// kill a freshly completed handshake (the reconnect case).
 func (t *TailcatNode) evictConn(peerHex string, c net.Conn) {
 	t.mu.Lock()
-	if c == nil || t.conns[peerHex] == c {
+	stale := c != nil && t.conns[peerHex] != c
+	var cl *tailcat.Client
+	if !stale {
 		delete(t.conns, peerHex)
+		cl = t.clients[peerHex]
+		delete(t.clients, peerHex)
 	}
-	cl := t.clients[peerHex]
-	delete(t.clients, peerHex)
 	t.mu.Unlock()
 	if c != nil {
 		c.Close()
@@ -405,67 +436,141 @@ func (t *TailcatNode) readLoop(peerHex string, c net.Conn) {
 	}
 }
 
-func (t *TailcatNode) getOrCreateClient(peerHex string) (*tailcat.Client, error) {
+// errConnectPending is a normal, retryable "not yet" rather than a failure:
+// callers keep their short deadlines and the next attempt finds a live conn.
+var errConnectPending = errors.New("relay connection in progress")
+
+// connFor returns a live connection to a peer, dialing in the background if
+// necessary. At most one attempt per peer is in flight, so two clients cannot
+// coexist and shadow each other on the relay.
+//
+// The meow handshake and the dial run back-to-back in the same goroutine. That
+// ordering matters: our server and our client share one node key, and a DERP
+// relay delivers only to the most recently active connection for a key. The
+// client is the last writer right after its meow, so dialling immediately keeps
+// the handshake response addressed to it; splitting the two lets our server ack
+// a meow in between and steal delivery. A failed attempt is torn down and
+// rebuilt, which is what breaks the shadowing on a single self-hosted relay.
+func (t *TailcatNode) connFor(peerHex string) (net.Conn, error) {
 	t.mu.Lock()
-	cl := t.clients[peerHex]
+	c := t.conns[peerHex]
+	done := t.connects[peerHex]
 	t.mu.Unlock()
-	if cl != nil {
-		return cl, nil
+	if c != nil {
+		return c, nil
+	}
+	if done != nil {
+		select {
+		case <-done:
+			// Attempt finished; fall through and retry if still no conn.
+		default:
+			return nil, errConnectPending
+		}
 	}
 	addr := t.addrFor(peerHex)
 	if addr == "" {
 		return nil, fmt.Errorf("no tailcat address for peer %s", peerHex)
 	}
-	cl = &tailcat.Client{
-		Server:     tailcat.Addr(addr),
-		Key:        t.priv,
-		DERPMapURL: t.derpMapURL, // resolve short RegionID addresses against our map
-		Logf:       func(format string, args ...any) { t.logger.Printf(format, args...) },
-	}
-	// Establish the meow handshake so the server adds us as a peer before dial.
-	ctx, cancel := context.WithTimeout(context.Background(), tailcatDialTimeout)
-	defer cancel()
-	if _, err := cl.Ping(ctx); err != nil {
-		cl.Close()
-		return nil, fmt.Errorf("ping peer %s: %w", peerHex, err)
-	}
+	done = make(chan struct{})
 	t.mu.Lock()
-	t.clients[peerHex] = cl
+	if cur := t.connects[peerHex]; cur != nil {
+		select {
+		case <-cur:
+		default:
+			t.mu.Unlock()
+			return nil, errConnectPending
+		}
+	}
+	if c := t.conns[peerHex]; c != nil {
+		t.mu.Unlock()
+		return c, nil
+	}
+	t.connects[peerHex] = done
 	t.mu.Unlock()
-	return cl, nil
+	go t.connectPeer(peerHex, addr, done)
+	return nil, errConnectPending
 }
 
-// connFor returns a live connection to a peer, dialing if necessary.
-func (t *TailcatNode) connFor(peerHex string) (net.Conn, error) {
+// connectPeer performs the meow handshake and the dial as one sequence, then
+// publishes the connection. On failure it drops the client so the next attempt
+// rebuilds it: a stale session cannot be revived by re-Ping alone (Phase 0).
+func (t *TailcatNode) connectPeer(peerHex, addr string, done chan struct{}) {
+	defer close(done)
+	if t.stopped() {
+		return
+	}
 	t.mu.Lock()
-	c := t.conns[peerHex]
+	cl := t.clients[peerHex]
 	t.mu.Unlock()
-	if c != nil {
-		return c, nil
+	if cl == nil {
+		cl = &tailcat.Client{
+			Server:     tailcat.Addr(addr),
+			Key:        t.priv,
+			DERPMapURL: t.derpMapURL, // resolve short RegionID addresses against our map
+			Logf:       func(format string, args ...any) { t.logger.Printf(format, args...) },
+		}
 	}
-	t.dialMu.Lock()
-	defer t.dialMu.Unlock()
-	// Re-check after acquiring the dial lock.
+	pctx, pcancel := context.WithTimeout(context.Background(), tailcatPingTimeout)
+	_, err := cl.Ping(pctx)
+	pcancel()
+	var c net.Conn
+	if err == nil {
+		// Re-dial the warm client rather than rebuilding: each dial sends a
+		// fresh WireGuard initiation, so we retry at our own cadence instead
+		// of waiting for WireGuard's 5s retransmit.
+		for attempt := 0; attempt < tailcatDialAttempts; attempt++ {
+			dctx, dcancel := context.WithTimeout(context.Background(), tailcatDialTimeout)
+			c, err = cl.DialTCPPort(dctx, tailcatPort)
+			dcancel()
+			if err == nil {
+				break
+			}
+		}
+	}
+	if err != nil {
+		// A failed dial can return a non-nil interface wrapping a typed-nil
+		// conn, so only the client is closed here.
+		cl.Close()
+		t.mu.Lock()
+		if t.clients[peerHex] == cl {
+			delete(t.clients, peerHex)
+		}
+		t.mu.Unlock()
+		return
+	}
+	if t.stopped() {
+		cl.Close()
+		c.Close()
+		return
+	}
 	t.mu.Lock()
-	c = t.conns[peerHex]
+	if t.conns[peerHex] != nil {
+		// The peer dialled us while we were connecting. That connection
+		// already carries both directions; replacing it with ours could swap
+		// a working path for the shadowed side of the relay.
+		t.mu.Unlock()
+		cl.Close()
+		c.Close()
+		return
+	}
+	old := t.clients[peerHex]
+	t.clients[peerHex] = cl
 	t.mu.Unlock()
-	if c != nil {
-		return c, nil
-	}
-	cl, err := t.getOrCreateClient(peerHex)
-	if err != nil {
-		return nil, err
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), tailcatDialTimeout)
-	defer cancel()
-	c, err = cl.DialTCPPort(ctx, tailcatPort)
-	if err != nil {
-		t.evictConn(peerHex, nil)
-		return nil, fmt.Errorf("dial peer %s: %w", peerHex, err)
+	if old != nil && old != cl {
+		old.Close()
 	}
 	t.registerConn(peerHex, c)
 	go t.readLoop(peerHex, c)
-	return c, nil
+}
+
+// stopped reports whether Stop has been called.
+func (t *TailcatNode) stopped() bool {
+	select {
+	case <-t.stopCh:
+		return true
+	default:
+		return false
+	}
 }
 
 // --- Transport send surface ---
