@@ -14,6 +14,15 @@ fetch() {
     target="$1"
     url="$2"
     marker="$target.version"
+    if [ "$AIMLESS_FETCH" = "never" ]; then
+        # Local-build / offline mode: run what is already in /data/bin (build.sh
+        # seeds it from the working tree's dist/) and never download.
+        if [ ! -f "$target" ]; then
+            echo "AIMLESS_FETCH=never but $(basename "$target") is missing in /data/bin" >&2
+            exit 1
+        fi
+        return 0
+    fi
     if [ "$AIMLESS_FETCH" = "always" ] \
        || [ ! -f "$target" ] \
        || [ ! -f "$marker" ] \

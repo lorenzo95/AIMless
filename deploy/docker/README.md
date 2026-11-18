@@ -40,18 +40,35 @@ cd deploy/docker
 docker compose up -d
 ```
 
-### Option B - build locally
+### Option B - build locally from your checkout (runs your branch, not main)
 
 ```bash
+deploy/package.sh          # build dist/ from the current branch first
 cd deploy/docker
-./build.sh     # docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+./build.sh                 # web desktop, yggdrasil
 ```
 
-The container is a fixed **environment**; the client (`aimless.pyz`) and the
-daemon (a static binary) are **fetched from the git `dist/` artifacts on first
-start** into `./aimless-data/bin/` (a bind-mounted volume), so they persist
-across restarts and you never rebuild the image for a new aimless release.
-Which daemon gets fetched depends on `AIMLESS_TRANSPORT` (below).
+`build.sh` builds the image here (tagged `aimless-webtop:local`, never pulled
+from GHCR) and **seeds `aimless-data/bin/` from your working tree's `dist/`**,
+then starts with `AIMLESS_FETCH=never` so nothing is downloaded. That is how you
+run an unmerged branch: the code in the container is exactly what you just
+built, not whatever is on main.
+
+```bash
+AIMLESS_TRANSPORT=tailcat ./build.sh            # web desktop over tailcat
+./build.sh --daemon                             # headless daemon
+AIMLESS_TRANSPORT=tailcat ./build.sh --daemon   # headless tailcat daemon
+```
+
+After changing code, re-run `deploy/package.sh` then `./build.sh`; the artifacts
+are re-seeded every time.
+
+With Option A the container is a fixed **environment**: the client
+(`aimless.pyz`) and the daemon (a static binary) are **fetched from the git
+`dist/` artifacts on first start** into `./aimless-data/bin/` (a bind-mounted
+volume), so they persist across restarts and you never rebuild the image for a
+new aimless release. Which daemon gets fetched depends on `AIMLESS_TRANSPORT`
+(below). Option B skips the download and uses your local `dist/` instead.
 
 No extra steps needed: on first run the browser window shows a **create identity**
 dialog (passphrase + confirm + screen name). Fill it in and you're set.
