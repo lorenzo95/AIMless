@@ -644,6 +644,33 @@ def test_gui_room_message_from_non_buddy_member(gtk_app):
     assert not session.cache.pending(), "a room member must not be filed as a stranger request"
 
 
+def test_away_status_reaches_non_buddy_room_members(gtk_app, monkeypatch):
+    """Regression: away was pushed only to the buddy list, so a room member who
+    is not a buddy never saw orange. Status is sealed to each recipient's own
+    key, so every member needs their own copy."""
+    app = gtk_app
+    win = app["win"]
+    session = app["session"]
+    carol_identity = crypto.new_identity()
+    c_node = "ce" * 32
+    members = [
+        {"node": session.self_node, "pubkey": session.client.pubkey_hex, "screen": "Alice"},
+        {"node": c_node, "pubkey": bytes(carol_identity.verify_key).hex(), "screen": "Carol"},
+    ]
+    conv = protocol.room_id([m["node"] for m in members])
+    session.cache.ensure_room(conv, {m["node"]: m for m in members})
+    win.messages.sync_sidebar()
+    buddy_nodes = {i["node"] for i in session.contacts().values()}
+    assert c_node not in buddy_nodes, "Carol must not be a buddy for this test to mean anything"
+
+    sent = []
+    monkeypatch.setattr(session.client, "set_status",
+                        lambda pubkey, node, away, addr="": sent.append((node, away)) or {})
+    win.set_away("back soon")
+    ok = _pump(win, lambda: (c_node, "back soon") in sent, timeout=15)
+    assert ok, "away status was not sent to the non-buddy room member"
+
+
 def test_gui_request_accept_and_deny(gtk_app, tmp_path, monkeypatch):
     app = gtk_app
     win = app["win"]

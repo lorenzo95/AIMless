@@ -3004,8 +3004,31 @@ class AimlessWindow(Gtk.Window):
         save_prefs(self.prefs)
         self._push_status(away, log_status=True)
 
+    def _status_recipients(self):
+        """Everyone who should hear our status: buddies plus every room member.
+
+        A room can include people who are not buddies. Status is sealed to each
+        recipient's own key, so every one of them needs their own copy - the
+        daemon cannot forward a payload sealed for somebody else. Deduped by
+        node so a member who is also a buddy is not sent two.
+        """
+        by_node = {}
+        for info in self.session.contacts().values():
+            if info.get("node") and info.get("pubkey"):
+                by_node[info["node"]] = info
+        for thread in self.messages.threads.values():
+            if not thread.get("is_room"):
+                continue
+            for node, m in thread.get("members", {}).items():
+                if node == self.session.self_node or node in by_node:
+                    continue
+                if m.get("pubkey"):
+                    by_node[node] = {"node": node, "pubkey": m["pubkey"],
+                                     "screen": m.get("screen", ""), "addr": m.get("addr", "")}
+        return list(by_node.values())
+
     def _push_status(self, away, log_status=False):
-        contacts = list(self.session.contacts().values())
+        recipients = self._status_recipients()
 
         def worker():
             errors = []
@@ -3015,7 +3038,7 @@ class AimlessWindow(Gtk.Window):
                 addr = ""
             if not addr.startswith("tc"):
                 addr = ""  # only tailcat dial addresses are worth propagating
-            for info in contacts:
+            for info in recipients:
                 try:
                     self.session.client.set_status(info["pubkey"], info["node"], away, addr=addr)
                 except Exception as e:
@@ -5680,12 +5703,12 @@ class AimlessApp:
     def rewatch(self):
         if not self.session:
             return
-        contacts = list(self.session.contacts().values())
+        recipients = self._status_recipients()
 
         def worker():
-            for info in contacts:
+            for info in recipients:
                 try:
-                    self.session.client.add_contact(info["node"])
+                    self.session.client.add_contact(info["node"], info.get("addr", ""))
                 except Exception:
                     pass
 
