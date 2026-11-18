@@ -6,7 +6,8 @@
 #
 # The container runs as the owner of ./aimless-data, so daemon/api.sock is
 # owned by you and your SSH login can reach it. Override with AIMLESS_UID /
-# AIMLESS_GID only if needed.
+# AIMLESS_GID only if needed. With AIMLESS_TRANSPORT=tailcat the socket is
+# ./aimless-data/tailcat/daemon/api.sock instead (separate identity per transport).
 services:
   aimless-daemon:
     image: ${AIMLESS_IMAGE:-ghcr.io/lorenzo95/aimless/aimless-webtop:latest}
@@ -15,11 +16,12 @@ services:
       - AIMLESS_MODE=daemon
       - AIMLESS_VERSION=${AIMLESS_VERSION:-main}   # git ref to fetch dist artifacts from
       - AIMLESS_FETCH=${AIMLESS_FETCH:-missing}    # 'always' to force a re-fetch
+      - AIMLESS_TRANSPORT=${AIMLESS_TRANSPORT:-yggdrasil}  # yggdrasil | tailcat; tailcat state lives in /data/tailcat
     restart: unless-stopped
     volumes:
       - ./aimless-data:/data             # daemon/, logs/, bin/ live here
     healthcheck:
-      test: ["CMD-SHELL", "test -S /data/daemon/api.sock"]
+      test: ["CMD-SHELL", "test -S /data/daemon/api.sock || test -S /data/tailcat/daemon/api.sock"]
       interval: 30s
       timeout: 5s
       retries: 3

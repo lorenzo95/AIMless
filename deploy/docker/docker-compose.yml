@@ -12,6 +12,7 @@ services:
       - VNC_PASS=${VNC_PASS:-aimless}          # password for the noVNC connection prompt
       - AIMLESS_VERSION=${AIMLESS_VERSION:-main}  # git ref to fetch dist artifacts from (branch/commit/tag)
       - AIMLESS_FETCH=${AIMLESS_FETCH:-missing}   # set to 'always' to force a re-fetch on start
+      - AIMLESS_TRANSPORT=${AIMLESS_TRANSPORT:-yggdrasil}  # yggdrasil | tailcat; each gets its own identity under /data
     restart: unless-stopped
     shm_size: "512mb"   # GTK + Xvfb need /dev/shm
     volumes:

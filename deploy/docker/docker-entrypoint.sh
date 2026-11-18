@@ -19,16 +19,50 @@ fetch() {
        || [ ! -f "$marker" ] \
        || [ "$(cat "$marker" 2>/dev/null)" != "$VERSION" ]; then
         echo "fetching $(basename "$target") from $VERSION …"
-        wget -qO "$target.tmp" "$url"
+        # -T bounds a stalled read so a hung transfer cannot block startup
+        # forever; busybox wget has no retry flag, so loop here.
+        n=0
+        until wget -T 30 -qO "$target.tmp" "$url"; do
+            n=$((n + 1))
+            if [ "$n" -ge 3 ]; then
+                echo "failed to fetch $url after $n attempts" >&2
+                rm -f "$target.tmp"
+                exit 1
+            fi
+            echo "retrying $(basename "$target") (attempt $((n + 1))/3) …" >&2
+            sleep 2
+        done
         mv -f "$target.tmp" "$target"
         printf '%s\n' "$VERSION" > "$marker"
         chmod +x "$target"
     fi
 }
 
-# static daemon + client pyz - both fetched from the git dist artifacts
-fetch /data/bin/aimless.pyz          "$BASE/aimless.pyz"
-fetch /data/bin/aimlessd-linux-amd64 "$BASE/aimlessd-linux-amd64"
+# Transport selection (Model A): one daemon binary per transport, each with its
+# own AIMLESS_HOME so keys, contacts and addresses never mix. Yggdrasil keeps
+# the historical /data layout; tailcat lives under /data/tailcat.
+case "${AIMLESS_TRANSPORT:-yggdrasil}" in
+    tailcat)
+        DAEMON_ARTIFACT=aimlessd-tailcat-linux-amd64
+        export AIMLESS_HOME=/data/tailcat
+        ;;
+    yggdrasil)
+        DAEMON_ARTIFACT=aimlessd-linux-amd64
+        export AIMLESS_HOME=/data
+        ;;
+    *)
+        echo "unknown AIMLESS_TRANSPORT '$AIMLESS_TRANSPORT' (use yggdrasil or tailcat)" >&2
+        exit 1
+        ;;
+esac
+DAEMON_BIN="/data/bin/$DAEMON_ARTIFACT"
+export AIMLESS_DAEMON_BIN="$DAEMON_BIN"
+mkdir -p "$AIMLESS_HOME/daemon" "$AIMLESS_HOME/client" "$AIMLESS_HOME/logs"
+
+# static daemon + client pyz - both fetched from the git dist artifacts. The
+# pyz is transport-agnostic; only the daemon binary differs.
+fetch /data/bin/aimless.pyz "$BASE/aimless.pyz"
+fetch "$DAEMON_BIN"        "$BASE/$DAEMON_ARTIFACT"
 
 if [ "$AIMLESS_MODE" = "daemon" ]; then
     # Daemon-only: no X/VNC/supervisord, no ports. The client reaches this
@@ -40,8 +74,8 @@ if [ "$AIMLESS_MODE" = "daemon" ]; then
     case "$UID_RUN" in ""|0) UID_RUN=1000 ;; esac
     case "$GID_RUN" in ""|0) GID_RUN=1000 ;; esac
     chown -R "$UID_RUN:$GID_RUN" /data
-    echo "starting aimlessd (daemon-only) as $UID_RUN:$GID_RUN"
-    exec su-exec "$UID_RUN:$GID_RUN" /data/bin/aimlessd-linux-amd64 -datadir /data/daemon
+    echo "starting $DAEMON_ARTIFACT (daemon-only, transport=${AIMLESS_TRANSPORT:-yggdrasil}) as $UID_RUN:$GID_RUN"
+    exec su-exec "$UID_RUN:$GID_RUN" "$DAEMON_BIN" -datadir "$AIMLESS_HOME/daemon"
 fi
 
 chown -R aimless:aimless /data

@@ -4,7 +4,16 @@
 # closing the window quits the app - close-to-tray is just a desktop behaviour).
 export DISPLAY=:1
 export HOME=/home/aimless
-export AIMLESS_HOME=/data
+# The entrypoint resolves AIMLESS_TRANSPORT into AIMLESS_HOME + AIMLESS_DAEMON_BIN
+# (a separate home per transport, so the two identities never mix). Honour those;
+# fall back to the same resolution when this script is run directly.
+case "${AIMLESS_TRANSPORT:-yggdrasil}" in
+    tailcat) : "${AIMLESS_HOME:=/data/tailcat}"
+             : "${AIMLESS_DAEMON_BIN:=/data/bin/aimlessd-tailcat-linux-amd64}" ;;
+    *)       : "${AIMLESS_HOME:=/data}"
+             : "${AIMLESS_DAEMON_BIN:=/data/bin/aimlessd-linux-amd64}" ;;
+esac
+export AIMLESS_HOME AIMLESS_DAEMON_BIN
 
 for i in $(seq 1 60); do
     [ -S /tmp/.X11-unix/X1 ] && break

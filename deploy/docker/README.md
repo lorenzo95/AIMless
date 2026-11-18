@@ -48,13 +48,40 @@ cd deploy/docker
 ```
 
 The container is a fixed **environment**; the client (`aimless.pyz`) and the
-daemon (`aimlessd-linux-amd64`, a static binary) are **fetched from the git
-`dist/` artifacts on first start** into `./aimless-data/bin/` (a bind-mounted
-volume), so they persist across restarts and you never rebuild the image for a
-new aimless release.
+daemon (a static binary) are **fetched from the git `dist/` artifacts on first
+start** into `./aimless-data/bin/` (a bind-mounted volume), so they persist
+across restarts and you never rebuild the image for a new aimless release.
+Which daemon gets fetched depends on `AIMLESS_TRANSPORT` (below).
 
 No extra steps needed: on first run the browser window shows a **create identity**
 dialog (passphrase + confirm + screen name). Fill it in and you're set.
+
+## Choosing the transport
+
+`AIMLESS_TRANSPORT` selects which daemon the container fetches and runs:
+
+| Value | Daemon fetched | State lives in |
+| --- | --- | --- |
+| `yggdrasil` (default) | `aimlessd-linux-amd64` | `aimless-data/daemon/` |
+| `tailcat` | `aimlessd-tailcat-linux-amd64` | `aimless-data/tailcat/daemon/` |
+
+```bash
+# web desktop over tailcat (e.g. against your own DERP relay)
+AIMLESS_TRANSPORT=tailcat AIMLESS_VERSION=tailcat-transport docker compose up -d --force-recreate
+
+# headless tailcat daemon
+AIMLESS_TRANSPORT=tailcat AIMLESS_VERSION=tailcat-transport docker compose -f docker-compose.daemon.yml up -d --force-recreate
+```
+
+The client pyz is the same for both. Each transport gets its **own identity,
+contacts and history** (a separate `AIMLESS_HOME`), so switching never mixes
+keys or addresses, and switching back finds your old identity untouched. In
+daemon-only mode the tailcat API socket is
+`aimless-data/tailcat/daemon/api.sock`.
+
+Only the selected transport's daemon is downloaded. Fetches use a 30s read
+timeout and are retried up to three times, so a stalled transfer fails loudly
+instead of hanging startup.
 
 ## Updating to a new aimless release
 
