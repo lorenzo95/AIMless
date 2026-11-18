@@ -42,6 +42,16 @@ from .service import Sync
 from .store import Store
 from . import __version__ as client_version
 from . import MIN_DAEMON_BUILD
+from .textutil import sanitize_filename, safe_conv_id, _human_size, linkify
+from .theme import THEMES, THEME_ENTRIES, detect_system_palette, get_theme, build_css
+from .prefs import load_prefs, save_prefs, DEFAULT_PREFS, pref
+from .notify import (_NOTIFY, _NOTIFY_LOCK, _BEEP, _LAST_SOUND, SOUND_OPTIONS,
+                     SOUND_MIN_GAP, _notify_init, notify_new_message, should_notify,
+                     sound_command, sound_enabled, should_play_sound, _run_beep,
+                     play_notification_sound, notify_init_async, desktop_notify)
+from .relay import (is_tailcat, net_label, short_address, relay_tooltip,
+                    REGION_COUNTRY, region_label, make_region_list)
+from .peerdialog import open_external, PeerListBox, ask_peers
 
 APP_NAME = "AIMless"
 STATUS_REASSERT_SECONDS = 60
@@ -56,8 +66,6 @@ def prefs_file():
 def attachments_dir():
     return paths.attachments_dir()
 
-
-from .textutil import sanitize_filename, safe_conv_id, _human_size, linkify
 
 def sock_path():
     return tunnel.client_socket()
@@ -74,11 +82,6 @@ def identity_path():
 def cache_path():
     return paths.cache_path()
 
-# --- theme palettes ---------------------------------------------------------
-# Every colour the UI uses lives here (CSS *and* the Pango markup strings), so
-# switching a theme is one dict swap + a CSS reload. Keys are semantic roles.
-
-from .theme import THEMES, THEME_ENTRIES, detect_system_palette, get_theme, build_css
 
 _ENV_THEME = os.environ.get("AIMLESS_THEME")
 CURRENT_THEME = _ENV_THEME if (_ENV_THEME in THEMES or _ENV_THEME == "system") else "system"
@@ -104,8 +107,6 @@ def set_theme(name):
         CSS_PROVIDER.load_from_data(build_css(C).encode())
     return C
 
-
-from .prefs import load_prefs, save_prefs, DEFAULT_PREFS, pref
 
 def format_time(ts, time_format="24h"):
     dt = datetime.fromtimestamp(ts / 1000)
@@ -145,12 +146,6 @@ def clamp_to_workarea(x, y, w, h, areas, margin=40):
     return (min(max(x, ax), ax + max(0, aw - w)),
             min(max(y, ay), ay + max(0, ah - h)))
 
-
-# --- desktop notifications (best-effort) ------------------------------------
-from .notify import (_NOTIFY, _NOTIFY_LOCK, _BEEP, _LAST_SOUND, SOUND_OPTIONS,
-                     SOUND_MIN_GAP, _notify_init, notify_new_message, should_notify,
-                     sound_command, sound_enabled, should_play_sound, _run_beep,
-                     play_notification_sound, notify_init_async, desktop_notify)
 
 def first_icon(*names):
     theme = Gtk.IconTheme.get_default()
@@ -622,100 +617,6 @@ class Session:
 # The presence state is shared with the command line, so the two can never
 # disagree about the same buddy.
 _presence_state = presence_state
-
-
-def is_tailcat(st):
-    """True when the daemon runs the tailcat transport (vs Yggdrasil)."""
-    return bool(st) and st.get("transport") == "tailcat"
-
-
-def net_label(st):
-    """Short network label for the status/route bars. Yggdrasil counts peers;
-    tailcat's relay state is already shown by the status dot, so no extra label."""
-    if not st:
-        return "peers 0/0"
-    if is_tailcat(st):
-        return ""
-    return f"peers {st.get('peers_up', 0)}/{st.get('peers_total', 0)}"
-
-
-def short_address(addr, n=28):
-    """A tailcat address is ~217 chars; show a readable prefix. The full value
-    lives in the tooltip and the invite."""
-    if not addr:
-        return ""
-    return addr if len(addr) <= n else addr[:n] + "…"
-
-
-def relay_tooltip(st):
-    """Hover text for the tailcat route bar: the relay region, not the long
-    address (which lives in the invite)."""
-    region = st.get("region") or {}
-    name = region.get("name") or region.get("code")
-    base = f"Relay region: {name}" if name else "tailcat relay"
-    nodes = region.get("nodes") or []
-    if nodes:
-        base += "\nRelay servers: " + ", ".join(nodes[:3])
-        if len(nodes) > 3:
-            base += f" (+{len(nodes) - 3} more)"
-    for p in st.get("peer_details") or []:
-        if p.get("error"):
-            base += "\nRelay problem: " + p["error"]
-            break
-    return base + "\nYour full address is in your invite (Contacts -> Copy)."
-
-
-# Country labels for the official DERP regions so the picker can sort by country
-# and type-ahead jumps (c -> Canada, g -> Germany). Unknown/custom regions fall
-# back to their own name.
-REGION_COUNTRY = {
-    "nyc": "United States", "sfo": "United States", "dfw": "United States",
-    "sea": "United States", "ord": "United States", "den": "United States",
-    "mia": "United States", "lax": "United States", "hnl": "United States",
-    "iad": "United States",
-    "tor": "Canada", "sao": "Brazil", "lhr": "United Kingdom", "fra": "Germany",
-    "nue": "Germany", "par": "France", "mad": "Spain", "ams": "Netherlands",
-    "waw": "Poland", "hel": "Finland", "sin": "Singapore", "tok": "Japan",
-    "hkg": "Hong Kong", "bom": "India", "syd": "Australia", "jnb": "South Africa",
-    "nai": "Kenya", "dbi": "United Arab Emirates",
-}
-
-
-def region_label(r):
-    name = r.get("name") or r.get("code", "")
-    code = r.get("code", "")
-    country = REGION_COUNTRY.get(code)
-    if country:
-        return f"{country} - {name} ({code})"
-    return f"{name} ({code})"
-
-
-def make_region_list(regions, current_id):
-    """A scrollable, country-sorted region list with type-ahead search. Returns
-    (scrolled_window, treeview)."""
-    ordered = sorted(regions, key=lambda r: region_label(r).lower())
-    store = Gtk.ListStore(str, int)  # label, region id
-    for r in ordered:
-        store.append([region_label(r), r.get("id", 0)])
-    view = Gtk.TreeView(model=store)
-    view.set_headers_visible(False)
-    view.set_enable_search(True)
-    view.set_search_column(0)
-    view.append_column(Gtk.TreeViewColumn("Region", Gtk.CellRendererText(), text=0))
-    if ordered:
-        sel = view.get_selection()
-        for i, r in enumerate(ordered):
-            if r.get("id") == current_id:
-                it = store.iter_nth_child(None, i)
-                sel.select_iter(it)
-                view.scroll_to_cell(store.get_path(it), None, False, 0, 0)
-                break
-    scroll = Gtk.ScrolledWindow()
-    scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
-    scroll.set_min_content_height(180)
-    scroll.set_shadow_type(Gtk.ShadowType.IN)
-    scroll.add(view)
-    return scroll, view
 
 
 def _self_state(st):
@@ -3180,8 +3081,6 @@ class AimlessWindow(Gtk.Window):
         return GLib.SOURCE_REMOVE
 
 
-
-
     def poll_presence(self):
         if self._presence_busy:
             return True
@@ -4212,8 +4111,6 @@ def ask_create_identity(parent):
     return (p1, sn)
 
 
-from .peerdialog import open_external, PeerListBox, ask_peers
-
 def create_identity(passphrase, screen):
     """Persist a fresh identity and self contact entry. Mirrors `aimless init`."""
     identity = crypto.new_identity()
@@ -4923,7 +4820,7 @@ class AimlessApp:
         if self._connect_show or not self.tray.have_tray:
             self.open_window()
 
-    # -- SSH tunnel monitoring -------------------------------------------
+    # -- SSH tunnel (remote mode) ------------------------------------------
     def probe_tunnel(self):
         """20s liveness probe. Only a *tunnel* failure (ssh/socket gone) triggers
         a restart; a reachable tunnel with an unreachable daemon is just reported
@@ -4996,6 +4893,7 @@ class AimlessApp:
         return False
 
 
+    # -- peers & relay UI ---------------------------------------------------
     def on_open_signal(self, *_):
         self.open_window()
         return GLib.SOURCE_REMOVE
@@ -5201,6 +5099,7 @@ class AimlessApp:
                 refresh_save()
         dlg.destroy()
 
+    # -- window lifecycle & startup -----------------------------------------
     def open_window(self):
         if getattr(self, "_awaiting_connect", False):
             if self.connect_window is not None:
@@ -5394,6 +5293,7 @@ class AimlessApp:
             time.sleep(0.05)
         return False
 
+    # -- main loop ----------------------------------------------------------
     def poll(self):
         if self.quitting:
             return GLib.SOURCE_REMOVE
@@ -5868,8 +5768,6 @@ def read_pid(path):
             return int(f.read().strip())
     except Exception:
         return None
-
-
 
 
 def app_exec_line(mode="gui"):
