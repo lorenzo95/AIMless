@@ -3147,8 +3147,9 @@ def test_incoming_message_plays_sound_when_hidden(gtk_app, monkeypatch):
     bob = gtk_app["bob"]
     a_node = gtk_app["a_node"]
     played = []
-    monkeypatch.setattr(gtkui, "play_notification_sound", lambda kind, force=False: played.append(kind))
-    monkeypatch.setattr(gtkui, "notify_new_message", lambda *a, **k: None)
+    from aimless import messages
+    monkeypatch.setattr(messages, "play_notification_sound", lambda kind, force=False: played.append(kind))
+    monkeypatch.setattr(messages, "notify_new_message", lambda *a, **k: None)
     win.prefs["notification_sound"] = "single"
     win.messages.selected = None  # conversation not showing
     bob.send(win.session.client.pubkey_hex, a_node, "ping", int(time.time() * 1000))

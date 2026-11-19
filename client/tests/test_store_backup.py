@@ -13,6 +13,7 @@ import pytest
 
 from aimless import keys as keysmod
 from aimless.store import Store, rekey_file
+from aimless import window
 
 
 def populate(store):
@@ -150,7 +151,7 @@ def test_data_backup_export_restore_attachments(tmp_path, monkeypatch):
     (adir / "conv1").mkdir(parents=True)
     fsrc = adir / "conv1" / "t1-file.bin"
     fsrc.write_bytes(b"attachment-bytes")
-    monkeypatch.setattr(gtkui, "attachments_dir", lambda: str(adir))
+    monkeypatch.setattr(window, "attachments_dir", lambda: str(adir))
 
     src = Store(str(tmp_path / "src.db"), "pwA")
     src.ingest("conv1", "nodeA", 1, 1000, "see file",
@@ -163,7 +164,7 @@ def test_data_backup_export_restore_attachments(tmp_path, monkeypatch):
 
     # Restore into a fresh store, a DIFFERENT attachments dir and passphrase.
     adir2 = tmp_path / "att_dst"
-    monkeypatch.setattr(gtkui, "attachments_dir", lambda: str(adir2))
+    monkeypatch.setattr(window, "attachments_dir", lambda: str(adir2))
     dst = Store(str(tmp_path / "dst.db"), "pwC")
     win2 = _FakeWin(dst, "pwC")
     gtkui.AimlessWindow.restore_data_backup_from(win2, bundle, "backup-pw", "pwC")
