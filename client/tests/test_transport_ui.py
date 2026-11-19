@@ -4,6 +4,7 @@ tailcat address readable."""
 import json
 
 from aimless import gtkui
+from aimless import relayctl
 
 
 def test_is_tailcat():
@@ -88,8 +89,8 @@ def _patch_relay_io(monkeypatch, reply):
     def _restart(supervisor, log=None):
         rec["restart"] += 1
 
-    monkeypatch.setattr(gtkui, "DaemonClient", _DC)
-    monkeypatch.setattr(gtkui, "restart_daemon", _restart)
+    monkeypatch.setattr(relayctl, "DaemonClient", _DC)
+    monkeypatch.setattr(relayctl, "restart_daemon", _restart)
     return rec
 
 
@@ -196,7 +197,7 @@ def test_reset_relay_config_keeps_other_settings(tmp_path, monkeypatch):
 def test_apply_relay_rejects_bad_map_url(monkeypatch):
     sup = _FakeSupervisor(external=False, status={}, running=True)
     rec = _patch_relay_io(monkeypatch, {"op": "relay", "address": "tcOLD"})
-    monkeypatch.setattr(gtkui, "_derp_map_error", lambda url: "could not fetch")
+    monkeypatch.setattr(relayctl, "_derp_map_error", lambda url: "could not fetch")
     msg, got = gtkui.apply_relay(sup, {"derpmap_url": "http://bad.example/map"}, {})
     assert msg.startswith("error:") and "DERP map URL" in msg
     assert got is None and rec["restart"] == 0 and rec["setrelay"] == []
