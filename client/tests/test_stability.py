@@ -5,6 +5,7 @@ import pytest
 from aimless import crypto, logging
 from aimless.store import Store
 from aimless import gtkui
+from aimless import session as sessionmod
 
 
 def test_log_fn_appends_and_stamps(tmp_path):
@@ -55,16 +56,16 @@ def test_corrupt_cache_session_recovery(tmp_path, monkeypatch):
     cache = home / "cache.json.enc"
     cache.write_bytes(b"broken")
 
-    monkeypatch.setattr(gtkui, "cache_path", lambda: str(cache))
+    monkeypatch.setattr(sessionmod, "cache_path", lambda: str(cache))
     from aimless.daemon import DaemonClient
 
     class FakeDaemon:
         pass
 
     identity = crypto.new_identity()
-    monkeypatch.setattr(gtkui, "identity_path", lambda: str(tmp_path / "no-identity.json"))
+    monkeypatch.setattr(sessionmod, "identity_path", lambda: str(tmp_path / "no-identity.json"))
     monkeypatch.setattr("aimless.crypto.load_identity", lambda p, pw: crypto.new_identity())
-    monkeypatch.setattr(gtkui, "sock_path", lambda: "/nonexistent.sock")
+    monkeypatch.setattr(sessionmod, "sock_path", lambda: "/nonexistent.sock")
 
     session = gtkui.Session.__new__(gtkui.Session)
     session.identity = identity

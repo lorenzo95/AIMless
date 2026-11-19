@@ -3,6 +3,7 @@ import time
 import pytest
 
 from aimless import crypto, gtkui
+from aimless import app as appmod
 from aimless.store import Store
 from aimless.daemon import DaemonClient, Client
 from aimless import protocol
@@ -67,7 +68,7 @@ def daemon_up_client_later(tmp_path, monkeypatch):
         "bob": {"pubkey": bytes(b_ident.verify_key).hex(), "node": b_node, "screen": "Bob"},
     })
 
-    monkeypatch.setattr(gtkui, "ask_passphrase", lambda parent: "testpass")
+    monkeypatch.setattr(appmod, "ask_passphrase", lambda parent: "testpass")
     monkeypatch.setattr(gtkui.AimlessWindow, "poll_status", lambda self: True)
 
     session = gtkui.Session("testpass")

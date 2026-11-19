@@ -2,8 +2,8 @@
 
 Extracted from gtkui.py: open_external (browser launcher), the PeerListBox
 widget and ask_peers (setup-wizard step / live peer manager). The active
-palette and window-icon helper are read from gtkui lazily to avoid a circular
-import and to stay correct across theme switches.
+palette and window-icon helper come from uibase, read lazily so they stay
+correct across theme switches.
 """
 import subprocess
 
@@ -105,8 +105,7 @@ class PeerListBox(Gtk.Box):
     # -- live state -------------------------------------------------------
     def set_states(self, details):
         """Show what the daemon says about each peer."""
-        from . import gtkui
-        C = gtkui.C
+        from .uibase import C
         by_key = {}
         for d in details or []:
             by_key[peersmod.peer_key(d.get("uri", ""))] = d
@@ -185,7 +184,7 @@ def ask_peers(parent, peer_list, live=False, details=None, defaults=None):
 
     Returns the new peer list, or None if the user cancelled.
     """
-    from .gtkui import setup_app_icon
+    from .uibase import setup_app_icon
     title = "AIMless - peers" if live else "AIMless - step 2 of 2: peers"
     dlg = Gtk.Dialog(title=title, transient_for=parent, modal=True)
     setup_app_icon(dlg)

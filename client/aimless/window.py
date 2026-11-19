@@ -22,6 +22,7 @@ from .daemon import DaemonError
 from .dialogs import ask_secret, ask_text
 from .identity import restore_bundle
 from .messages import MessagesView
+from .views import ActivityView, ContactsView
 from .notify import play_notification_sound, sound_enabled
 from .prefs import load_prefs, pref, save_prefs
 from .relay import is_tailcat, net_label, relay_tooltip, short_address
@@ -35,7 +36,6 @@ from .uibase import (APP_NAME, C, STATUS_REASSERT_SECONDS, _add_contact_from_ros
 
 class AimlessWindow(Gtk.Window):
     def __init__(self, session, supervisor, app_ref=None):
-        from .gtkui import ActivityView, ContactsView
         super().__init__(title=APP_NAME)
         self.session = session
         self.supervisor = supervisor

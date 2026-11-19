@@ -5,6 +5,7 @@ import pytest
 gi = pytest.importorskip("gi")
 
 from aimless import paths, gtkui
+from aimless import app as appmod, session as sessionmod
 
 
 @pytest.fixture
@@ -76,7 +77,7 @@ def test_external_stop_only_stops_tunnel(home, monkeypatch):
     sup = gtkui.DaemonSupervisor()
     called = []
     monkeypatch.setattr(sup.tunnel, "stop", lambda: called.append("tunnel"))
-    monkeypatch.setattr(gtkui, "daemon_pid_from_socket", lambda: 111)
+    monkeypatch.setattr(sessionmod, "daemon_pid_from_socket", lambda: 111)
     sup.stop()
     assert called == ["tunnel"]
 
@@ -173,7 +174,7 @@ def test_try_connect_classifies_daemon_down(home, monkeypatch):
     def fake_run_async(fn, on_done=None, on_error=None):
         on_done(fn())
 
-    monkeypatch.setattr(gtkui, "run_async", fake_run_async)
+    monkeypatch.setattr(appmod, "run_async", fake_run_async)
     monkeypatch.setattr(gtkui.GLib, "timeout_add_seconds", lambda *a, **k: 0)
 
     def boom(log=None):
@@ -244,7 +245,7 @@ def test_heartbeat_swallows_daemon_errors(home, monkeypatch):
     _remote(home)
     app = gtkui.AimlessApp()
     app.quitting = False
-    monkeypatch.setattr(gtkui, "run_async", lambda fn, on_done=None, on_error=None: fn())
+    monkeypatch.setattr(appmod, "run_async", lambda fn, on_done=None, on_error=None: fn())
     assert app.heartbeat() == gtkui.GLib.SOURCE_CONTINUE
 
 

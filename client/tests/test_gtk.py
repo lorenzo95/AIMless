@@ -16,6 +16,7 @@ from test_e2e import two_nodes  # noqa: F401
 from aimless import crypto, protocol
 from aimless.store import Store
 from aimless import gtkui
+from aimless import app as appmod
 from aimless.daemon import Client, DaemonClient, DaemonError
 
 
@@ -60,7 +61,7 @@ def gtk_app(tmp_path, monkeypatch, two_nodes):
         "bob": {"pubkey": bytes(bob_identity.verify_key).hex(), "node": b_node, "screen": "Bob"},
     })
 
-    monkeypatch.setattr(gtkui, "ask_passphrase", lambda parent: "testpass")
+    monkeypatch.setattr(appmod, "ask_passphrase", lambda parent: "testpass")
     monkeypatch.setattr(gtkui.AimlessWindow, "poll_status", lambda self: True)
 
     session = gtkui.Session("testpass")
@@ -2002,7 +2003,7 @@ def test_desktop_entry_lets_the_taskbar_find_us(tmp_path, monkeypatch):
     from aimless import appicon
 
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
-    monkeypatch.setattr(gtkui, "app_exec_line", lambda mode="gui": "aimless gui")
+    monkeypatch.setattr(appmod, "app_exec_line", lambda mode="gui": "aimless gui")
     appicon.install()
 
     path = gtkui.install_desktop_entry()
@@ -2886,7 +2887,7 @@ def test_startup_does_not_exit_while_the_tray_is_being_adopted(tmp_path, monkeyp
         def set_offline(self, *a, **k):
             pass
 
-    monkeypatch.setattr(gtkui, "TrayIcon", lambda app: _LateTray())
+    monkeypatch.setattr(appmod, "TrayIcon", lambda app: _LateTray())
 
     rc = app._setup(open_window=False)
     assert rc is None, "the app exited instead of waiting for the tray"
