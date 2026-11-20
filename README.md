@@ -41,6 +41,18 @@ Open <http://localhost:8081/vnc.html>. In the first window choose **Contacts -> 
 
 > The container has no audio and no notification daemon, so sound and notifications are silent there by design. If you expose the page to the internet, put it behind TLS and a password, and change `VNC_PASS` - whoever reaches that page gets your desktop.
 
+**Same image, tailcat transport**: add `-e AIMLESS_TRANSPORT=tailcat` and give it its own volume. The entrypoint then fetches `aimlessd-tailcat-linux-amd64` and keeps that identity under `/data/tailcat`, so the two transports never mix:
+
+```sh
+docker run -d --name aimless-tailcat --restart unless-stopped \
+  -p 127.0.0.1:8082:8080 \
+  -e VNC_PASS="aimless" -e AIMLESS_TRANSPORT=tailcat \
+  -v "$PWD/aimless-tailcat-data:/data" \
+  ghcr.io/lorenzo95/aimless/aimless-webtop:latest
+```
+
+Open <http://localhost:8082/vnc.html>. Both peers must run tailcat and exchange **v2 invites**, and the relay region is part of your address - pick it before sharing invites. To pin a release instead of tracking `main`, add `-e AIMLESS_VERSION=v0.9.22`; see **[docs/releasing.md](docs/releasing.md)**. Run your own relay with **[derper/](derper/README.md)**; transport details in **[docs/tailcat.md](docs/tailcat.md)**.
+
 ### On your own machine - two files, nothing to build
 
 ```sh
@@ -332,6 +344,8 @@ python3 deploy/smoke_tailcat.py          # tailcat over public DERP (DM + group 
 ./deploy/package.sh                      # build the versioned dist/ artifacts (both daemons)
 python3 deploy/check_dist.py             # release gate: the committed dist matches the source
 ```
+
+CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs the dist gate, both daemon test sets and the client suite on pushes to `main`/`tailcat-transport`, on every PR, and on demand. The release ritual - version bumps, artifacts, tagging, what GHCR publishes and how to verify it - is in **[docs/releasing.md](docs/releasing.md)**.
 
 ## Status
 

@@ -118,8 +118,15 @@ AIMLESS_VERSION=v0.8.0 docker compose up -d --force-recreate
 
 `AIMLESS_FETCH=always` forces a re-fetch on the next start; otherwise the
 fetched artifacts are reused until the pinned `AIMLESS_VERSION` changes or you
-delete them (`rm aimless-data/bin/*`). The `AIMLESS_VERSION` env is the seam a
-future auto-updater can drive.
+delete them (`rm aimless-data/bin/*`). Note that the marker stores the *ref
+name*: on the default `AIMLESS_VERSION=main` it matches forever, so a container
+that already started does **not** pick up new commits on `main` - use `always`,
+or pin a tag. The `AIMLESS_VERSION` env is the seam a future auto-updater can
+drive.
+
+The full release ritual (version bumps, `package.sh`, the `check_dist.py` gate,
+tagging, what GHCR publishes, how to verify) is in
+**[docs/releasing.md](../../docs/releasing.md)**.
 
 ## Use
 

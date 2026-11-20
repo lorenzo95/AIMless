@@ -1,0 +1,92 @@
+name: ci
+
+# The release gate. dist/ is committed by hand (deploy/package.sh), so nothing
+# stops a merge where the artifacts are stale unless CI checks it. Three jobs:
+# the artifacts match the source, both daemon builds pass their tests, and the
+# client suite passes against real daemons under a virtual display.
+
+on:
+  pull_request:
+  push:
+    branches: [main, tailcat-transport]
+  workflow_dispatch: {}
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  dist-gate:
+    name: dist artifacts match source
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: check_dist
+        run: python3 deploy/check_dist.py
+
+  daemon:
+    name: daemon (${{ matrix.transport }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        transport: [yggdrasil, tailcat]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: daemon/go.mod
+          cache-dependency-path: daemon/go.sum
+      # The tailcat tests run a local DERP + STUN and drive magicsock, so they
+      # need a real network stack. A VM runner is fine; a default docker bridge
+      # (no IPv6, restricted UDP buffers) is not - see docs/releasing.md.
+      - name: build and test
+        working-directory: daemon
+        run: |
+          if [ "${{ matrix.transport }}" = "tailcat" ]; then
+            go build -tags tailcat -o /tmp/aimlessd-tailcat .
+            go test -tags tailcat ./...
+          else
+            go build -o /tmp/aimlessd .
+            go test ./...
+          fi
+
+  client:
+    name: client suite (GTK + real-daemon e2e)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      # The e2e and GTK fixtures build and run real aimlessd processes.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: daemon/go.mod
+          cache-dependency-path: daemon/go.sum
+      - name: Install GTK and test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            python3-gi python3-gi-cairo gir1.2-gtk-3.0 python3-nacl \
+            xvfb xauth dbus-x11 adwaita-icon-theme fonts-dejavu-core \
+            python3-tk x11-utils
+          python3 -m pip install --break-system-packages "pytest>=8"
+      # test_stability/test_stop spawn a real daemon via daemon_binary(), which
+      # looks in ~/.local/bin and on PATH - unlike the e2e fixtures, they do not
+      # build one themselves.
+      - name: Build the daemon the process-management tests spawn
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          cd daemon && go build -buildvcs=false -o "$HOME/.local/bin/aimlessd" .
+      - name: pytest
+        working-directory: client
+        env:
+          GDK_BACKEND: x11
+        run: xvfb-run -a python3 -m pytest tests -q -o faulthandler_timeout=180 -p no:cacheprovider
