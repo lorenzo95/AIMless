@@ -187,6 +187,19 @@ The icon is the AIM *running man* - yellow on a blue tile - drawn with Cairo at 
 
 > **Upgrading from an older version?** The on-disk layout changed once; old files are not migrated. To keep your identity, **export an identity backup first** (Keys & Identity -> *Export identity…*) or copy `identity.json` and `node.key` by hand, then use **Import backup…** on the first-run screen. To keep your rooms, message history and attachments too, also export a **data backup** (*Export data…*) and import it after your identity.
 
+### History retention
+
+Local history is bounded by age: messages older than **90 days** are dropped, along with the attachment files they point at. The pass runs when you unlock the app and then at most once a day, so an always-on tray session does not grow without bound either.
+
+- **Options -> Preferences … -> Keep message history for** sets the window in days; `0` keeps everything forever. *Prune now* applies it immediately and reports what went to the Activity tab.
+- `aimless prune [--days N] [--dry-run]` does the same from a terminal; `--dry-run` only counts what would go.
+- **Mail still in flight is never dropped.** An outgoing message stays until every recipient has ACKed it, whatever its age.
+- Only history goes. Watermarks, room rosters, read marks, mutes and pending requests survive, so pruning never re-opens a dismissed room and never makes sync re-fetch what it just removed. A room whose whole history expired keeps its roster and simply reads as empty.
+- Attachment files are only ever deleted inside `client/attachments/`. A stored path pointing elsewhere, or a symlink leading out of that tree, is left alone.
+- The daemon side is already bounded: the inbox is a capped journal, attachments have a byte cap, and the outbox drains on ACK.
+
+Shortening the window is destructive - export a **data backup** first if you want to keep the older history.
+
 ## Keys, identity and the CLI
 
 Header menu -> **Keys & Identity ...**
@@ -197,7 +210,7 @@ Header menu -> **Keys & Identity ...**
 
 Keys are written `0600` and atomically, and seeds are never logged.
 
-The CLI does the same things without a window: `aimless init`, `invite`, `add <invite> [petname]`, `list`, `send`, `chat`, `away`, `gui`, `tray`, `paths`, `stop` - see `aimless --help`.
+The CLI does the same things without a window: `aimless init`, `invite`, `add <invite> [petname]`, `list`, `send`, `chat`, `away`, `prune`, `gui`, `tray`, `paths`, `stop` - see `aimless --help`.
 
 ## Always-on daemon (optional)
 

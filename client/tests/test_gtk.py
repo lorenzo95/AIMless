@@ -3469,3 +3469,58 @@ def test_the_catchup_timer_retries_until_the_sweep_runs(gtk_app):
     win.messages._catchup_busy = True
     assert win._catchup_once() == GLib.SOURCE_CONTINUE
     win.messages._catchup_busy = False
+
+
+def test_gui_preferences_history_retention(gtk_app, monkeypatch):
+    """Preferences exposes the retention window, and Prune now runs the real
+    app pass against the unlocked store (not a reimplementation of it)."""
+    from types import SimpleNamespace
+    from aimless import prefs as prefsmod
+
+    win = gtk_app["win"]
+    store = win.session.store
+    b_node = gtk_app["b_node"]
+    now_ms = int(time.time() * 1000)
+    store.ingest(b_node, b_node, 1, now_ms - 120 * 86400000, "ancient history")
+    store.ingest(b_node, b_node, 2, now_ms, "recent history")
+
+    # The real retention methods on a shell stub: constructing AimlessApp here
+    # would install a desktop entry and an icon theme behind the test's back.
+    lines = []
+    shell = SimpleNamespace(session=win.session, window=win,
+                            log=lambda line: lines.append(line))
+    shell._prune_history = appmod.AimlessApp._prune_history.__get__(shell)
+    shell._refresh_after_prune = appmod.AimlessApp._refresh_after_prune.__get__(shell)
+    win.app_ref = shell
+
+    win.prefs["history_days"] = 30
+    prefsmod.save_prefs(win.prefs)
+
+    def widgets(w):
+        yield w
+        if isinstance(w, Gtk.Container):
+            for child in w.get_children():
+                yield from widgets(child)
+
+    def fake_run(self):
+        kids = list(widgets(self.get_content_area()))
+        labels = [w.get_text() for w in kids if isinstance(w, Gtk.Label)]
+        assert any("Keep message history for" in t for t in labels)
+        assert any("attachment files are removed" in t for t in labels)
+        spin = next(w for w in kids if isinstance(w, Gtk.SpinButton))
+        assert spin.get_value() == 30, "the dialog must show the stored window"
+        spin.set_value(5)
+        assert win.prefs["history_days"] == 5
+        assert "history_pruned_at" not in win.prefs, "a new window applies at once"
+        btn = next(w for w in kids if isinstance(w, Gtk.Button)
+                   and w.get_label() == "Prune now")
+        btn.clicked()
+        return Gtk.ResponseType.CLOSE
+
+    monkeypatch.setattr(Gtk.Dialog, "run", fake_run, raising=False)
+    win.on_preferences()
+
+    assert [m["text"] for m in store.msgs(b_node)] == ["recent history"]
+    assert any("history retention" in line for line in lines)
+    assert prefsmod.load_prefs()["history_days"] == 5
+    assert prefsmod.load_prefs()["history_pruned_at"] > 0

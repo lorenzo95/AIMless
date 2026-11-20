@@ -1315,6 +1315,48 @@ class AimlessWindow(Gtk.Window):
         row("Timestamp format", fmt)
 
         box.pack_start(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL), False, False, 0)
+        days_spin = Gtk.SpinButton.new_with_range(0, 3650, 1)
+        days_spin.set_digits(0)
+        days_spin.set_value(int(pref(self.prefs, "history_days") or 0))
+        days_spin.set_tooltip_text("0 keeps history forever")
+
+        def on_days(w):
+            self.prefs["history_days"] = int(w.get_value())
+            # A new window applies straight away, not at the next daily pass.
+            self.prefs.pop("history_pruned_at", None)
+            save_prefs(self.prefs)
+        days_spin.connect("value-changed", on_days)
+        days_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        days_box.pack_start(days_spin, False, False, 0)
+        unit = Gtk.Label(label="days (0 = forever)")
+        unit.get_style_context().add_class("muted")
+        days_box.pack_start(unit, False, False, 0)
+        row("Keep message history for", days_box)
+        keep_note = Gtk.Label(label="Older messages and their attachment files are removed. "
+                                    "Mail still waiting to be delivered is always kept.")
+        keep_note.set_xalign(0.0)
+        keep_note.set_line_wrap(True)
+        keep_note.get_style_context().add_class("muted")
+        box.pack_start(keep_note, False, False, 0)
+        prune_btn = Gtk.Button(label="Prune now")
+        prune_btn.set_halign(Gtk.Align.START)
+        prune_btn.get_style_context().add_class("muted")
+
+        def on_prune(*_):
+            app = self.app_ref
+            if app is None:
+                return
+            if not int(self.prefs.get("history_days") or 0):
+                self.activity.log("history retention is off (0 = keep forever)")
+                return
+            gone = app._prune_history(force=True)
+            n = gone.get("messages", 0)
+            self.activity.log(f"history retention: removed {n} message(s)" if n
+                              else "history retention: nothing to remove")
+        prune_btn.connect("clicked", on_prune)
+        box.pack_start(prune_btn, False, False, 0)
+
+        box.pack_start(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL), False, False, 0)
         theme_combo = Gtk.ComboBoxText()
         for tid, label, _desc in THEME_ENTRIES:
             theme_combo.append(tid, label)

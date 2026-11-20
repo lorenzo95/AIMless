@@ -32,6 +32,10 @@ DEFAULT_PREFS = {
     "theme": "system",           # used by the 0.8.3 theming work
     "seen_onboarding": False,
     "sidebar_order": "recent",   # "recent" (newest first) or "alpha" (by name)
+    # Age-based history retention: messages older than this are dropped along
+    # with their attachment files. 0 keeps everything forever. Outgoing mail
+    # that not every recipient has acked is never dropped, whatever its age.
+    "history_days": 90,
 }
 
 

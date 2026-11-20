@@ -23,14 +23,15 @@ from .dialogs import _error_dialog, ask_create_identity, ask_passphrase, ask_sec
 from .identity import create_identity, restore_bundle
 from .notify import desktop_notify, notify_init_async
 from .peerdialog import ask_peers
+from .prefs import load_prefs, pref, save_prefs
 from .relay import is_tailcat, make_region_list
 from .relayctl import apply_relay, relay_cfg_equal, reset_relay_config, restart_daemon
 from .session import DaemonSupervisor, Session, read_pid
 from .uibase import (APP_NAME, C, DETACHED_NOTICE_SECONDS, ISLAND_GRACE_SECONDS,
                      LINK_GRACE_SECONDS, PEER_CHECK_SECONDS, PENDING_CHECK_SECONDS,
                      TRAY_ADOPT_SECONDS, detached_gap_seconds, fmt_duration,
-                     identity_path, install_css_provider, run_async, setup_app_icon,
-                     setup_application_identity, sock_path, tray_icon_name)
+                     attachments_dir, identity_path, install_css_provider, run_async,
+                     setup_app_icon, setup_application_identity, sock_path, tray_icon_name)
 from .window import AimlessWindow
 
 
@@ -1027,6 +1028,7 @@ class AimlessApp:
         if session.cache_recovered:
             self.log(f"cache recovery: {session.cache_recovered}")
         self.session = session
+        self._prune_history()
         # The app is unlocked now: the real unread counters take over from the
         # locked-state count (same messages, different wording). The pending
         # timer removes itself on its next tick.
@@ -1039,6 +1041,59 @@ class AimlessApp:
         self.window = AimlessWindow(session, self.supervisor, app_ref=self)
         self.window.restore_geometry()
         self.window.show_all()
+
+    def _prune_history(self, force=False):
+        """Apply age-based history retention once the store is unlocked.
+
+        Runs at unlock and then at most once a day (the poll loop calls it too,
+        which is just a timestamp check), so an always-on tray session does not
+        grow without bound either. ``force`` skips the daily throttle: the
+        Preferences dialog uses it after a change or a Prune now click.
+        Pruning only removes stored history and its attachment files - never
+        undelivered outgoing mail. Returns what went, or {} when nothing ran.
+        """
+        if self.session is None:
+            return {}  # still locked - nothing to prune yet
+        prefs = load_prefs()
+        try:
+            days = int(pref(prefs, "history_days") or 0)
+        except (TypeError, ValueError):
+            return {}  # a hand-edited prefs.json must not break the poll loop
+        try:
+            last = float(prefs.get("history_pruned_at") or 0)
+        except (TypeError, ValueError):
+            last = 0.0  # unreadable watermark: run the pass now
+        if days <= 0:
+            return {}
+        now = time.time()
+        if not force and now - last < 86400:
+            return {}
+        try:
+            gone = self.session.store.prune_history(
+                days, attachments_root=attachments_dir())
+        except Exception as e:
+            self.log(f"history retention skipped: {e}")
+            return {}
+        prefs["history_pruned_at"] = now
+        save_prefs(prefs)
+        if gone["messages"]:
+            extra = (f" and {gone['attachments']} attachment file(s)"
+                     if gone["attachments"] else "")
+            self.log(f"history retention: removed {gone['messages']} message(s) "
+                     f"older than {days} days{extra}")
+            self._refresh_after_prune()
+        return gone
+
+    def _refresh_after_prune(self):
+        """An open thread may have lost bubbles - redraw it from the store."""
+        messages = getattr(getattr(self, "window", None), "messages", None)
+        selected = getattr(messages, "selected", None)
+        if selected is None:
+            return
+        try:
+            messages.refresh_conversation(selected["conv"])
+        except Exception:
+            pass
 
     def _cancel_or_quit(self):
         """User cancelled and there is no usable tray: log it so the caller (a
@@ -1121,6 +1176,7 @@ class AimlessApp:
     def poll(self):
         if self.quitting:
             return GLib.SOURCE_REMOVE
+        self._prune_history()
         if self.supervisor.external:
             if getattr(self, "_awaiting_connect", False):
                 return GLib.SOURCE_CONTINUE

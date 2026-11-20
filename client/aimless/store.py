@@ -239,6 +239,96 @@ class Store:
             self.conn.execute("DELETE FROM read_marks WHERE conv=?", (conv,))
             self.conn.commit()
 
+    def prune_history(self, max_age_days: int, now_ms: int = None,
+                      attachments_root: str = None) -> dict:
+        """Drop stored history older than ``max_age_days``, and its files.
+
+        Retention is age-based and touches history only: watermarks, rosters,
+        read marks and pending requests are left alone, so pruning never
+        re-opens a dismissed conversation and never makes sync re-fetch what it
+        just removed. A conversation whose whole history expires keeps its
+        roster and simply reads as empty.
+
+        An outgoing message with any recipient still unacked is kept regardless
+        of age: the daemon is still trying to deliver it, and dropping the
+        record would lose that tracking.
+
+        Attachment files are only ever unlinked inside ``attachments_root``, so
+        a stored path pointing elsewhere can never delete an unrelated file.
+
+        ``max_age_days <= 0`` disables pruning. Returns counts of what went.
+        """
+        gone = {"messages": 0, "attachments": 0}
+        if not max_age_days or max_age_days <= 0:
+            return gone
+        now = int(now_ms if now_ms is not None else time.time() * 1000)
+        cutoff = now - int(max_age_days) * 86400000
+        root = os.path.realpath(attachments_root) if attachments_root else None
+        with self._lock:
+            rows = self._prunable(cutoff)
+            for _mid, _direction, att in rows:
+                if att is not None and root and self._unlink_attachment(att, root):
+                    gone["attachments"] += 1
+            # Batched deletes: a long-expired history is thousands of rows and
+            # this pass runs on the GUI thread, once a day.
+            mids = [r[0] for r in rows]
+            for i in range(0, len(mids), 500):
+                chunk = mids[i:i + 500]
+                marks = ",".join("?" * len(chunk))
+                self.conn.execute(f"DELETE FROM deliveries WHERE msg_id IN ({marks})", chunk)
+                self.conn.execute(f"DELETE FROM messages WHERE id IN ({marks})", chunk)
+            self.conn.commit()
+        gone["messages"] = len(mids)
+        return gone
+
+    def _unlink_attachment(self, att, root: str) -> bool:
+        """Delete one stored attachment file, but only inside ``root``.
+
+        A malformed blob, a non-string or foreign path, or a symlink pointing
+        out of the attachments tree is left alone: retention must never be able
+        to delete an unrelated file, and one bad row must not abort the pass.
+        The caller holds self._lock.
+        """
+        try:
+            path = json.loads(self._dec(att)).get("path")
+            if not isinstance(path, str) or not path:
+                return False
+            rp = os.path.realpath(path)
+            if not rp.startswith(root + os.sep) or not os.path.isfile(rp):
+                return False
+            os.unlink(rp)
+        except Exception:
+            return False
+        try:
+            parent = os.path.dirname(rp)
+            if parent != root and not os.listdir(parent):
+                os.rmdir(parent)
+        except OSError:
+            pass
+        return True
+
+
+    def _prunable(self, cutoff: int) -> list:
+        """Rows older than cutoff, minus outgoing mail still in flight.
+
+        An outgoing message is in flight while any of its delivery rows is
+        unacked; legacy outgoing messages have no rows and are prunable. The
+        caller holds self._lock.
+        """
+        return self.conn.execute(
+            "SELECT m.id, m.dir, m.attachment FROM messages m "
+            "WHERE m.ts < ? AND NOT (m.dir = 'out' AND EXISTS ("
+            "  SELECT 1 FROM deliveries d WHERE d.msg_id = m.id AND d.acked = 0))",
+            (cutoff,)).fetchall()
+
+    def count_prunable(self, max_age_days: int, now_ms: int = None) -> int:
+        """How many messages prune_history would remove - a dry run."""
+        if not max_age_days or max_age_days <= 0:
+            return 0
+        now = int(now_ms if now_ms is not None else time.time() * 1000)
+        with self._lock:
+            return len(self._prunable(now - int(max_age_days) * 86400000))
+
     # -- messages ----------------------------------------------------------
     def ingest(self, conv: str, sender: str, seq: int, ts: int, text: str,
                attachment: dict = None) -> bool:

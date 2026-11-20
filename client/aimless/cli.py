@@ -8,6 +8,7 @@ from . import tunnel
 from .daemon import presence_state, DaemonClient, Client, DaemonError
 from .service import Sync
 from .store import Store
+from .prefs import load_prefs, pref
 
 
 def client_dir() -> str:
@@ -283,6 +284,35 @@ def cmd_unblock(args):
         daemon.close()
 
 
+def cmd_prune(args):
+    days = args.days
+    if days is None:
+        days = pref(load_prefs(), "history_days")
+    try:
+        days = int(days or 0)
+    except (TypeError, ValueError):
+        print(f"invalid retention window: {days!r}", file=sys.stderr)
+        sys.exit(1)
+    if days < 0:
+        print("--days must be 0 or more", file=sys.stderr)
+        sys.exit(1)
+    store = Store(cache_path(), _passphrase_for_cache())
+    try:
+        if days <= 0:
+            print("retention is off (0 = keep forever) - nothing to prune")
+            return
+        if args.dry_run:
+            n = store.count_prunable(days)
+            print(f"{n} message(s) older than {days} days would be removed")
+            return
+        gone = store.prune_history(days, attachments_root=paths.attachments_dir())
+        extra = (f" and {gone['attachments']} attachment file(s)"
+                 if gone["attachments"] else "")
+        print(f"removed {gone['messages']} message(s) older than {days} days{extra}")
+    finally:
+        store.close()
+
+
 def cmd_away(args):
     buddy_map = {k: v for k, v in protocol.load_contacts(contacts_path()).items() if k != "_self"}
     if not buddy_map:
@@ -443,6 +473,12 @@ def main():
     p_unblock = sub.add_parser("unblock", help="unblock a node (clears the client mute + daemon block)")
     p_unblock.add_argument("node")
 
+    p_prune = sub.add_parser("prune", help="drop stored history older than the retention window")
+    p_prune.add_argument("--days", type=int, default=None,
+                         help="window in days (default: the history_days preference, 90)")
+    p_prune.add_argument("--dry-run", action="store_true",
+                         help="report how many messages would go, remove nothing")
+
     p_send = sub.add_parser("send", help="send one message")
     p_send.add_argument("petname")
     p_send.add_argument("text")
@@ -471,6 +507,7 @@ def main():
         "remove": cmd_remove,
         "blocked": cmd_blocked,
         "unblock": cmd_unblock,
+        "prune": cmd_prune,
         "send": cmd_send,
         "chat": cmd_chat,
         "away": cmd_away,
