@@ -54,6 +54,53 @@ def test_write_node_key_atomic_and_0600(tmp_path):
     assert not os.path.exists(path)
 
 
+def test_write_tailcat_key_atomic_and_0600(tmp_path):
+    keytext = '{"key": "privkey:abc", "psk": "psk:def"}'
+    path = keys.write_tailcat_key(str(tmp_path), keytext)
+    assert os.path.basename(path) == "tailcat.key"
+    assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
+    assert keys.read_tailcat_key(str(tmp_path)) == keytext
+    assert not os.path.exists(path + ".tmp"), "the temp file must not survive"
+    keys.remove_tailcat_key(str(tmp_path))
+    assert not os.path.exists(path)
+    assert keys.read_tailcat_key(str(tmp_path)) is None
+    keys.remove_tailcat_key(str(tmp_path))  # removing twice is not an error
+
+
+def test_write_tailcat_key_normalises_the_trailing_newline(tmp_path):
+    keytext = '{"key": "privkey:abc"}'
+    keys.write_tailcat_key(str(tmp_path), keytext)
+    first = (tmp_path / "tailcat.key").read_bytes()
+    keys.write_tailcat_key(str(tmp_path), keytext + "\n")
+    assert (tmp_path / "tailcat.key").read_bytes() == first
+    assert first.endswith(b"\n") and not first.endswith(b"\n\n")
+
+
+def test_both_key_files_share_one_atomic_writer(tmp_path, monkeypatch):
+    """A failed write leaves no key file behind, for either transport."""
+    calls = []
+
+    def boom(path, data, mode=0o600):
+        calls.append(path)
+        raise OSError("disk full")
+
+    monkeypatch.setattr(keys, "_atomic_write", boom)
+    with pytest.raises(OSError):
+        keys.write_node_key(str(tmp_path), bytes(range(32)))
+    with pytest.raises(OSError):
+        keys.write_tailcat_key(str(tmp_path), "{}")
+    assert [os.path.basename(p) for p in calls] == ["node.key", "tailcat.key"]
+    assert not (tmp_path / "node.key").exists()
+    assert not (tmp_path / "tailcat.key").exists()
+
+
+def test_read_tailcat_key_is_none_without_a_tailcat_identity(tmp_path):
+    assert keys.read_tailcat_key(str(tmp_path)) is None
+    keys.write_node_key(str(tmp_path), bytes(range(32)))
+    assert keys.read_tailcat_key(str(tmp_path)) is None, \
+        "a Yggdrasil-only install must export None, not fail"
+
+
 def test_bundle_round_trip_and_failures(tmp_path):
     path = str(tmp_path / "backup.json")
     payload = {"identitySeed": "aa" * 32, "nodeSeed": "bb" * 32, "screen": "Alice",

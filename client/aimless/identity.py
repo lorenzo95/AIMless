@@ -38,23 +38,12 @@ def restore_bundle(path, bundle_passphrase, app_passphrase):
     if data.get("nodeSeed"):
         keysmod.write_node_key(paths.daemon_dir(), bytes.fromhex(data["nodeSeed"]))
     if data.get("tailcatKey"):
-        _write_tailcat_key(paths.daemon_dir(), data["tailcatKey"])
+        keysmod.write_tailcat_key(paths.daemon_dir(), data["tailcatKey"])
     if data.get("relay"):
         _write_relay_config(paths.daemon_dir(), data["relay"])
     if data.get("contacts"):
         protocol.save_contacts(contacts_path(), data["contacts"])
     return data
-
-
-def _write_tailcat_key(datadir, keytext):
-    """Restore the tailcat identity file (node key + PSK) from a backup."""
-    os.makedirs(datadir, exist_ok=True)
-    path = os.path.join(datadir, "tailcat.key")
-    tmp = path + ".tmp"
-    with open(tmp, "w") as f:
-        f.write(keytext if keytext.endswith("\n") else keytext + "\n")
-    os.chmod(tmp, 0o600)
-    os.replace(tmp, path)
 
 
 def _write_relay_config(datadir, relay):

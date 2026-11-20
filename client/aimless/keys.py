@@ -1,7 +1,9 @@
-"""Key management: Yggdrasil address derivation + encrypted backups.
+"""Key management: key files, address derivation + encrypted backups.
 
-Pure helpers so the risky parts (address derivation, key parsing, bundle
-encryption) are testable without a GUI or daemon.
+Pure helpers so the risky parts (address derivation, key parsing, key file
+writing, bundle encryption) are testable without a GUI or daemon. Both
+transports' key files are handled here - Yggdrasil's ``node.key`` and
+tailcat's ``tailcat.key`` - through one atomic 0600 writer.
 
 The address derivation mirrors yggdrasil-go's ``address.AddrForKey`` exactly
 (``src/address/address.go``): invert the public key, count the leading 1s, drop
@@ -114,6 +116,41 @@ def write_node_key(datadir: str, seed: bytes) -> str:
 def remove_node_key(datadir: str) -> None:
     try:
         os.remove(os.path.join(datadir, "node.key"))
+    except FileNotFoundError:
+        pass
+
+
+def write_tailcat_key(datadir: str, keytext: str) -> str:
+    """Write ``<datadir>/tailcat.key`` (the daemon's node key + PSK JSON).
+
+    Same atomic 0600 write as the Yggdrasil node key: this is secret key
+    material, so it is never readable by anyone else, not even briefly.
+    Returns the path.
+    """
+    os.makedirs(datadir, exist_ok=True)
+    path = os.path.join(datadir, "tailcat.key")
+    text = keytext if keytext.endswith("\n") else keytext + "\n"
+    _atomic_write(path, text.encode("utf-8"))
+    return path
+
+
+def read_tailcat_key(datadir: str):
+    """The stored tailcat key text, or None when there is no tailcat identity.
+
+    Used by the identity backup, so a Yggdrasil-only install exports None
+    rather than failing on a missing file.
+    """
+    try:
+        with open(os.path.join(datadir, "tailcat.key")) as f:
+            return f.read().strip()
+    except OSError:
+        return None
+
+
+def remove_tailcat_key(datadir: str) -> None:
+    """Delete the tailcat identity; the daemon generates a fresh one on start."""
+    try:
+        os.remove(os.path.join(datadir, "tailcat.key"))
     except FileNotFoundError:
         pass
 

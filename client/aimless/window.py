@@ -588,12 +588,7 @@ class AimlessWindow(Gtk.Window):
                 node_seed = f.read().strip()
         except OSError:
             pass
-        tailcat_key = None
-        try:
-            with open(os.path.join(paths.daemon_dir(), "tailcat.key")) as f:
-                tailcat_key = f.read().strip()
-        except OSError:
-            pass
+        tailcat_key = keysmod.read_tailcat_key(paths.daemon_dir())
         relay = None
         try:
             with open(os.path.join(paths.daemon_dir(), "config.json")) as f:
@@ -826,7 +821,7 @@ class AimlessWindow(Gtk.Window):
                         parent=dlg):
                     return
                 try:
-                    os.remove(os.path.join(paths.daemon_dir(), "tailcat.key"))
+                    keysmod.remove_tailcat_key(paths.daemon_dir())
                 except OSError:
                     pass
                 self._daemon_restart()

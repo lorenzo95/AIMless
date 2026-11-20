@@ -100,8 +100,7 @@ from .messages import MessagesView
 from .window import AimlessWindow
 from .dialogs import (ask_secret, _error_dialog, ask_passphrase,
                       ask_create_identity, ask_text)
-from .identity import (create_identity, restore_bundle, _write_tailcat_key,
-                       _write_relay_config)
+from .identity import create_identity, restore_bundle, _write_relay_config
 from .relayctl import (restart_daemon, relay_cfg_equal, apply_relay,
                        _derp_map_error, reset_relay_config)
 

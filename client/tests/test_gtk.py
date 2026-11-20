@@ -3224,6 +3224,32 @@ def test_restore_bundle_writes_new_layout(tmp_path, monkeypatch):
     assert contacts["_self"]["screen"] == "Alice"
 
 
+def test_restore_bundle_writes_the_tailcat_key_and_relay(tmp_path, monkeypatch):
+    """The tailcat side of an identity restore uses the same key-file writer
+    as the Yggdrasil node key: 0600 and atomic."""
+    from aimless import keys, paths
+    monkeypatch.setenv("AIMLESS_HOME", str(tmp_path / "home"))
+    paths.ensure_dirs()
+    identity = crypto.new_identity()
+    keytext = '{"key": "privkey:abc", "psk": "psk:def"}'
+    bundle = str(tmp_path / "b.json")
+    keys.save_bundle(bundle, "bpw", {
+        "identitySeed": bytes(identity).hex(),
+        "tailcatKey": keytext,
+        "relay": {"region_id": 900, "hostname": "derp.example.test"},
+        "screen": "Alice",
+        "contacts": {"_self": {"screen": "Alice"}},
+    })
+    gtkui.restore_bundle(bundle, "bpw", "apppw")
+    datadir = paths.daemon_dir()
+    assert keys.read_tailcat_key(datadir) == keytext
+    keyfile = os.path.join(datadir, "tailcat.key")
+    assert os.stat(keyfile).st_mode & 0o777 == 0o600
+    assert not os.path.exists(keyfile + ".tmp")
+    with open(os.path.join(datadir, "config.json")) as f:
+        assert json.load(f)["relay"]["region_id"] == 900
+
+
 def test_first_run_screen_offers_import(monkeypatch):
     from gi.repository import Gtk
     monkeypatch.setattr(Gtk.Dialog, "run", lambda self: Gtk.ResponseType.APPLY)
@@ -3524,3 +3550,39 @@ def test_gui_preferences_history_retention(gtk_app, monkeypatch):
     assert any("history retention" in line for line in lines)
     assert prefsmod.load_prefs()["history_days"] == 5
     assert prefsmod.load_prefs()["history_pruned_at"] > 0
+
+
+def test_gui_tailcat_regenerate_removes_the_key_file(gtk_app, monkeypatch):
+    """Regenerate identity in tailcat mode goes through keys.remove_tailcat_key
+    and restarts the daemon - the GUI no longer touches the key file itself."""
+    from aimless import keys, paths
+
+    win = gtk_app["win"]
+    datadir = paths.daemon_dir()
+    keys.write_tailcat_key(datadir, '{"key": "privkey:abc", "psk": "psk:def"}')
+    monkeypatch.setattr(win.supervisor, "status",
+                        lambda *a, **k: {"transport": "tailcat", "address": "tc1example"})
+    restarted = []
+    monkeypatch.setattr(win, "_confirm", lambda *a, **k: True)
+    monkeypatch.setattr(win, "_daemon_restart", lambda *a, **k: restarted.append(True))
+    monkeypatch.setattr(win.session, "refresh_node", lambda *a, **k: None)
+    monkeypatch.setattr(win.messages, "sync_sidebar", lambda *a, **k: None)
+
+    def widgets(w):
+        yield w
+        if isinstance(w, Gtk.Container):
+            for child in w.get_children():
+                yield from widgets(child)
+
+    def fake_run(self):
+        btn = next(w for w in widgets(self.get_content_area())
+                   if isinstance(w, Gtk.Button) and w.get_label() == "Regenerate identity")
+        btn.clicked()
+        return Gtk.ResponseType.CLOSE
+
+    monkeypatch.setattr(Gtk.Dialog, "run", fake_run, raising=False)
+    win.on_keys()
+
+    assert keys.read_tailcat_key(datadir) is None, "the old tailcat identity must be gone"
+    assert not os.path.exists(os.path.join(datadir, "tailcat.key"))
+    assert restarted == [True], "the daemon must restart to generate a fresh key"

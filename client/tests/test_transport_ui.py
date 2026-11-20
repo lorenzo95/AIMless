@@ -4,6 +4,7 @@ tailcat address readable."""
 import json
 
 from aimless import gtkui
+from aimless import keys
 from aimless import relayctl
 
 
@@ -229,7 +230,7 @@ def test_derp_map_error_validates_regions(monkeypatch):
 
 def test_write_tailcat_key_and_relay_restore(tmp_path):
     keytext = '{"key": "privkey:abc", "psk": "psk:def"}'
-    gtkui._write_tailcat_key(str(tmp_path), keytext)
+    keys.write_tailcat_key(str(tmp_path), keytext)
     written = (tmp_path / "tailcat.key").read_text()
     assert written.strip() == keytext
     assert (tmp_path / "tailcat.key").stat().st_mode & 0o777 == 0o600
