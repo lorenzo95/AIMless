@@ -4,6 +4,10 @@ name: ci
 # stops a merge where the artifacts are stale unless CI checks it. Three jobs:
 # the artifacts match the source, both daemon builds pass their tests, and the
 # client suite passes against real daemons under a virtual display.
+#
+# Test output is teed to a file and the failures are copied into the job
+# summary, so a red run can be triaged from the run page (and the API) without
+# downloading logs.
 
 on:
   pull_request:
@@ -51,13 +55,25 @@ jobs:
       - name: build and test
         working-directory: daemon
         run: |
+          set +e
           if [ "${{ matrix.transport }}" = "tailcat" ]; then
-            go build -tags tailcat -o /tmp/aimlessd-tailcat .
-            go test -tags tailcat ./...
+            go build -tags tailcat -o /tmp/aimlessd-tailcat . && go test -tags tailcat ./... > /tmp/gotest.log 2>&1
           else
-            go build -o /tmp/aimlessd .
-            go test ./...
+            go build -o /tmp/aimlessd . && go test ./... > /tmp/gotest.log 2>&1
           fi
+          rc=$?
+          set -e
+          tail -n 30 /tmp/gotest.log 2>/dev/null || true
+          exit $rc
+      - name: Report failures in the job summary
+        if: failure()
+        run: |
+          {
+            echo "### daemon (${{ matrix.transport }}) failures"
+            echo '```'
+            grep -E -- '--- FAIL|^FAIL|timeout waiting|panic:|\.go:[0-9]+:' /tmp/gotest.log 2>/dev/null | head -40 || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
   client:
     name: client suite (GTK + real-daemon e2e)
@@ -89,4 +105,17 @@ jobs:
         working-directory: client
         env:
           GDK_BACKEND: x11
-        run: xvfb-run -a python3 -m pytest tests -q -o faulthandler_timeout=180 -p no:cacheprovider
+        run: |
+          rc=0
+          xvfb-run -a python3 -m pytest tests -q -o faulthandler_timeout=180 -p no:cacheprovider > /tmp/pytest.log 2>&1 || rc=$?
+          tail -n 30 /tmp/pytest.log
+          exit $rc
+      - name: Report failures in the job summary
+        if: failure()
+        run: |
+          {
+            echo "### client suite failures"
+            echo '```'
+            sed -n '/short test summary/,$p' /tmp/pytest.log 2>/dev/null | head -40 || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
