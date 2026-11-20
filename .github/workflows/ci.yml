@@ -63,6 +63,10 @@ jobs:
           fi
           rc=$?
           set -e
+          if [ "$rc" -ne 0 ]; then
+            echo "=== failing tests ==="
+            grep -E -- '--- FAIL|^FAIL|timeout waiting|panic:' /tmp/gotest.log | head -40 || true
+          fi
           tail -n 30 /tmp/gotest.log 2>/dev/null || true
           exit $rc
       - name: Report failures in the job summary
