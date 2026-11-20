@@ -56,13 +56,19 @@ const tailcatKeyFile = "tailcat.key"
 const tailcatPort = 1
 
 // tailcatDialTimeout bounds the TCP dial inside an already-handshaked tunnel.
-// It stays short so a failed attempt is retried quickly (mail's retryLoop and
-// presence provide the cadence); a dial that fails means a stale session.
-const tailcatDialTimeout = 2 * time.Second
+// It must outlast WireGuard's 5s handshake retransmit: after a peer restarts,
+// the first initiation can go unanswered because the peer still holds our old
+// session, and WireGuard retries at 5s. A 2s budget gave up and destroyed the
+// client before that retransmit could land, so the path never recovered. That
+// is what broke on IPv4-only hosts (CI runners, containers), where magicsock
+// cannot roam to a fresh direct endpoint and has to wait for the retransmit.
+// Mail's retryLoop and presence provide the outer cadence, so the longer inner
+// budget costs nothing on a healthy path.
+const tailcatDialTimeout = 6 * time.Second
 
 // tailcatDialAttempts is how many times a warm client is re-dialled before the
-// whole client is rebuilt. Each dial sends a fresh WireGuard initiation, so we
-// retry at our own cadence instead of waiting for WireGuard's 5s retransmit.
+// whole client is rebuilt. Each dial sends a fresh WireGuard initiation, so a
+// second attempt covers a peer that only answers the next one.
 const tailcatDialAttempts = 2
 
 // tailcatPingTimeout bounds the meow handshake, separately from the dial.
@@ -71,6 +77,20 @@ const tailcatDialAttempts = 2
 // than the old 2s all-in-one deadline: cutting it short tore the client down
 // just as it became usable, and the peer never came online on a custom relay.
 const tailcatPingTimeout = 6 * time.Second
+
+// tailcatSilenceTimeout is how long we wait for *any* reply after sending
+// reliable data (MSG/FILE) before declaring the path dead and rebuilding it.
+// A tunnel can go silent without ever erroring: the peer restarted, and with no
+// direct UDP path to roam to - DERP-only, the normal case inside a container or
+// on a network that blocks UDP - WireGuard keeps retransmitting into a dead
+// session indefinitely. readLoop would block forever, the dead connection would
+// stay registered, and mail would keep writing into the void. When a direct path
+// exists magicsock roams and recovers on its own, which is why this only bites
+// DERP-only.
+const tailcatSilenceTimeout = 10 * time.Second
+
+// tailcatLivenessInterval is how often the watchdog looks for silent paths.
+const tailcatLivenessInterval = 2 * time.Second
 
 // defaultDERPMapURL is the official Tailscale DERP map (~28 regions). The
 // tailcat.dev default is only a 4-region subset; the official relays accept
@@ -106,19 +126,20 @@ type TailcatNode struct {
 	regionByHost   map[string]RegionInfo // DERP node hostname -> region (current-region lookup)
 	regionsCacheAt time.Time
 
-	mu        sync.Mutex
-	addrs     map[string]string          // peer hex -> tailcat address (dial target)
-	clients   map[string]*tailcat.Client // peer hex -> our outbound client
-	conns     map[string]net.Conn        // peer hex -> live bidirectional connection
-	connects  map[string]chan struct{}   // peer hex -> in-flight/last connection attempt
-	hmu       sync.RWMutex
-	onPacket  func(from PeerID, payload []byte)
-	onPathUp  func(PeerID)
-	closeOnce sync.Once
-	probeMu   sync.Mutex
-	probeUp   bool
-	probeErr  string
-	stopCh    chan struct{}
+	mu         sync.Mutex
+	addrs      map[string]string          // peer hex -> tailcat address (dial target)
+	clients    map[string]*tailcat.Client // peer hex -> our outbound client
+	conns      map[string]net.Conn        // peer hex -> live bidirectional connection
+	connects   map[string]chan struct{}   // peer hex -> in-flight/last connection attempt
+	awaitReply map[string]int64           // peer hex -> ms of the oldest reliable send still unanswered
+	hmu        sync.RWMutex
+	onPacket   func(from PeerID, payload []byte)
+	onPathUp   func(PeerID)
+	closeOnce  sync.Once
+	probeMu    sync.Mutex
+	probeUp    bool
+	probeErr   string
+	stopCh     chan struct{}
 }
 
 // NewTransport constructs the tailcat transport. peers/listenURLs are Yggdrasil
@@ -173,6 +194,7 @@ func newTailcatNode(datadir string, region *tailcfg.DERPRegion, log *aimlessLogg
 		clients:    make(map[string]*tailcat.Client),
 		conns:      make(map[string]net.Conn),
 		connects:   make(map[string]chan struct{}),
+		awaitReply: make(map[string]int64),
 	}
 	if err := t.startServer(region, regionID, derpMapURL); err != nil {
 		return nil, err
@@ -186,6 +208,7 @@ func newTailcatNode(datadir string, region *tailcfg.DERPRegion, log *aimlessLogg
 	t.stopCh = make(chan struct{})
 	t.probeUp = true // optimistic until the first probe completes
 	go t.probeRelayLoop()
+	go t.livenessLoop()
 	return t, nil
 }
 
@@ -415,6 +438,7 @@ func (t *TailcatNode) registerConn(peerHex string, c net.Conn) {
 	t.mu.Lock()
 	old := t.conns[peerHex]
 	t.conns[peerHex] = c
+	delete(t.awaitReply, peerHex) // the peer dialled us, so the path is alive
 	t.mu.Unlock()
 	if old != nil && old != c {
 		old.Close()
@@ -432,6 +456,7 @@ func (t *TailcatNode) evictConn(peerHex string, c net.Conn) {
 	var cl *tailcat.Client
 	if !stale {
 		delete(t.conns, peerHex)
+		delete(t.awaitReply, peerHex)
 		cl = t.clients[peerHex]
 		delete(t.clients, peerHex)
 	}
@@ -456,9 +481,87 @@ func (t *TailcatNode) readLoop(peerHex string, c net.Conn) {
 			t.evictConn(peerHex, c)
 			return
 		}
+		t.noteInbound(peerHex)
 		if h := t.packetHandler(); h != nil {
 			h(pid, env)
 		}
+	}
+}
+
+// noteInbound records proof of life: anything arriving from the peer means the
+// path works, so whatever reliable send we were waiting on is answered.
+func (t *TailcatNode) noteInbound(peerHex string) {
+	t.mu.Lock()
+	delete(t.awaitReply, peerHex)
+	t.mu.Unlock()
+}
+
+// noteReliableSend arms the silence watchdog for MSG/FILE only. One-way traffic
+// (STATUS, PROBE) must not arm it: a quiet peer legitimately never replies, and
+// tearing down a healthy connection every few seconds would churn the relay.
+func (t *TailcatNode) noteReliableSend(peerHex string, payload []byte) {
+	if len(payload) < 2 {
+		return
+	}
+	switch EnvelopeType(payload[1]) {
+	case TypeMsg, TypeFile:
+	default:
+		return
+	}
+	now := time.Now().UnixMilli()
+	t.mu.Lock()
+	if _, waiting := t.awaitReply[peerHex]; !waiting {
+		t.awaitReply[peerHex] = now // keep the oldest unanswered send
+	}
+	t.mu.Unlock()
+}
+
+// livenessLoop rebuilds paths that went silent. Evicting the connection also
+// closes the client, so the next send builds a fresh one and re-handshakes
+// instead of reusing a session the peer no longer knows about.
+func (t *TailcatNode) livenessLoop() {
+	tick := time.NewTicker(tailcatLivenessInterval)
+	defer tick.Stop()
+	for {
+		select {
+		case <-t.stopCh:
+			return
+		case <-tick.C:
+		}
+		t.reapSilentPeers(time.Now().UnixMilli())
+	}
+}
+
+// reapSilentPeers evicts every peer whose reliable send has gone unanswered for
+// tailcatSilenceTimeout. Split out so it is testable without a real tunnel.
+func (t *TailcatNode) reapSilentPeers(nowMs int64) {
+	t.mu.Lock()
+	var dead []string
+	for peer, since := range t.awaitReply {
+		if nowMs-since >= tailcatSilenceTimeout.Milliseconds() {
+			dead = append(dead, peer)
+		}
+	}
+	conns := make(map[string]net.Conn, len(dead))
+	for _, peer := range dead {
+		delete(t.awaitReply, peer)
+		if c := t.conns[peer]; c != nil {
+			conns[peer] = c
+		}
+	}
+	t.mu.Unlock()
+	for _, peer := range dead {
+		c := conns[peer]
+		if c == nil {
+			continue // already torn down by a read error
+		}
+		short := peer
+		if len(short) > 8 {
+			short = short[:8]
+		}
+		t.logger.Printf("tailcat: no reply from %s for %s - rebuilding the path",
+			short, tailcatSilenceTimeout)
+		t.evictConn(peer, c)
 	}
 }
 
@@ -625,6 +728,7 @@ func (t *TailcatNode) send(to PeerID, payload []byte) (int, error) {
 		t.evictConn(peerHex, c)
 		return 0, err
 	}
+	t.noteReliableSend(peerHex, payload)
 	return len(payload), nil
 }
 

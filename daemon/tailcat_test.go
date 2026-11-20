@@ -6,6 +6,8 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/hex"
+	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -300,5 +302,123 @@ func TestTailcatRelayConfig(t *testing.T) {
 	}
 	if regionForRelay(RelayConfig{}) != nil {
 		t.Fatal("empty relay should yield no custom region")
+	}
+}
+
+// --- silent-path watchdog ---
+//
+// Regression for the DERP-only reconnect stall: a tunnel can stop delivering
+// without ever erroring (the peer restarted and there is no direct UDP path to
+// roam to), so readLoop blocks forever and mail keeps writing into a dead
+// session. TestTailcatReconnect covers the end-to-end case, but it only fails
+// when UDP is unavailable - these pin the mechanism on any host.
+
+func tcWatchNode() *TailcatNode {
+	return &TailcatNode{
+		logger:     &aimlessLogger{},
+		conns:      map[string]net.Conn{},
+		clients:    map[string]*tailcat.Client{},
+		awaitReply: map[string]int64{},
+		stopCh:     make(chan struct{}),
+	}
+}
+
+func tcEnvelope(t *testing.T, kind EnvelopeType) []byte {
+	t.Helper()
+	e := &Envelope{Version: envelopeVersion, Type: kind, Seq: 1, Ts: 1, Payload: []byte("x")}
+	b, err := e.Encode()
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	return b
+}
+
+func TestTailcatWatchdogArmsOnlyOnReliableSends(t *testing.T) {
+	n := tcWatchNode()
+	peer := strings.Repeat("ab", 32)
+	for _, kind := range []EnvelopeType{TypeStatus, TypeProbe, TypeAck} {
+		n.noteReliableSend(peer, tcEnvelope(t, kind))
+	}
+	if len(n.awaitReply) != 0 {
+		t.Fatal("one-way traffic must not arm the watchdog: a quiet peer never replies")
+	}
+	n.noteReliableSend(peer, tcEnvelope(t, TypeMsg))
+	first := n.awaitReply[peer]
+	if first == 0 {
+		t.Fatal("MSG must arm the watchdog")
+	}
+	n.noteReliableSend(peer, tcEnvelope(t, TypeFile))
+	if n.awaitReply[peer] != first {
+		t.Fatal("the oldest unanswered send must be kept, not reset by later sends")
+	}
+	n.noteInbound(peer)
+	if len(n.awaitReply) != 0 {
+		t.Fatal("any inbound packet is proof of life")
+	}
+}
+
+func TestTailcatWatchdogRebuildsASilentPath(t *testing.T) {
+	n := tcWatchNode()
+	peer := strings.Repeat("cd", 32)
+	c, other := net.Pipe()
+	defer other.Close()
+	n.conns[peer] = c
+	n.noteReliableSend(peer, tcEnvelope(t, TypeMsg))
+	since := n.awaitReply[peer]
+
+	n.reapSilentPeers(since + tailcatSilenceTimeout.Milliseconds() - 1)
+	if n.conns[peer] == nil {
+		t.Fatal("evicted before the silence timeout elapsed")
+	}
+
+	n.reapSilentPeers(since + tailcatSilenceTimeout.Milliseconds())
+	if n.conns[peer] != nil {
+		t.Fatal("a silent path must be evicted so the next send rebuilds the client")
+	}
+	if len(n.awaitReply) != 0 {
+		t.Fatal("the wait must be cleared once the path is torn down")
+	}
+	if _, err := c.Write([]byte("x")); err == nil {
+		t.Fatal("the evicted connection must be closed")
+	}
+}
+
+func TestTailcatWatchdogLeavesAReplyingPeerAlone(t *testing.T) {
+	n := tcWatchNode()
+	peer := strings.Repeat("ef", 32)
+	c, other := net.Pipe()
+	defer other.Close()
+	n.conns[peer] = c
+	n.noteReliableSend(peer, tcEnvelope(t, TypeMsg))
+	n.noteInbound(peer) // the ACK came back
+	n.reapSilentPeers(time.Now().UnixMilli() + 60000)
+	if n.conns[peer] == nil {
+		t.Fatal("a peer that replied must keep its connection")
+	}
+}
+
+func TestTailcatWatchdogClearsWhenThePeerDialsUs(t *testing.T) {
+	n := tcWatchNode()
+	peer := strings.Repeat("12", 32)
+	n.noteReliableSend(peer, tcEnvelope(t, TypeMsg))
+	c, other := net.Pipe()
+	defer other.Close()
+	n.registerConn(peer, c)
+	if len(n.awaitReply) != 0 {
+		t.Fatal("an inbound connection proves the path works")
+	}
+	n.reapSilentPeers(time.Now().UnixMilli() + 60000)
+	if n.conns[peer] != c {
+		t.Fatal("the inbound connection must survive")
+	}
+}
+
+func TestTailcatWatchdogToleratesAnAlreadyTornDownPeer(t *testing.T) {
+	n := tcWatchNode()
+	peer := strings.Repeat("34", 32)
+	n.awaitReply[peer] = time.Now().Add(-time.Minute).UnixMilli()
+	n.reapSilentPeers(time.Now().UnixMilli()) // no conn: a read error already evicted it
+	if len(n.awaitReply) != 0 {
+		t.Fatal("the stale wait must be cleared without a connection to close")
 	}
 }

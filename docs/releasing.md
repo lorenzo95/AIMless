@@ -113,18 +113,27 @@ panel. Remove the container and its volume when done.
   those, re-run the job - a real regression fails consistently. Everything else
   in the suite is deterministic.
 
-- **`TestTailcatAddrPersistence` fails on an IPv4-only host - suspected product
-  issue, not a CI quirk.** The tailcat tests start a local DERP + STUN and drive
-  magicsock. With IPv6 available (the host, or `docker run --network host`) the
-  test passes in ~1.5s. In an IPv4-only netns (a default docker bridge, and
-  GitHub's runners) it fails deterministically: after the *sender* restarts,
-  delivery from the persisted address never completes. Raising its timeout does
-  not help, and neither does `--cap-add NET_ADMIN`, which removes the UDP buffer
-  warnings - so the trigger is the missing IPv6, not container privileges.
-  `TestTailcatReconnect` (receiver restart plus an explicit re-link) passes in
-  the same environment. This is the next thing to investigate; until it is
-  understood the tailcat CI job stays red on this one test. To reproduce CI
-  locally with a green tailcat job, use host networking.
+- **Two tailcat path bugs that CI found, both fixed.** GitHub's runners are
+  IPv4-only and the in-process tests map every node's STUN endpoint to
+  127.0.0.1 - a condition a normal desktop does not reproduce, which is why
+  these survived local testing.
+  - `tailcatDialTimeout` was 2s, shorter than WireGuard's 5s handshake
+    retransmit. After a peer restarted, the first initiation went unanswered,
+    we gave up and destroyed the client before the retransmit could land, and
+    the path never recovered (`TestTailcatAddrPersistence`,
+    `TestTailcatBidirectional`). It is now 6s.
+  - An established tunnel can go silent without ever erroring, so `readLoop`
+    blocked forever, the dead connection stayed registered and mail kept
+    writing into the void (`TestTailcatReconnect` with all UDP blocked). A
+    watchdog now evicts a path that has had no reply 10s after a reliable send,
+    so the next send rebuilds the client. It arms only on MSG/FILE, so one-way
+    status traffic cannot churn healthy connections.
+
+  To reproduce either condition locally: `docker run --cap-add NET_ADMIN` on
+  the default bridge (IPv4-only, UDP up), optionally adding
+  `iptables -A OUTPUT -p udp -j DROP` for the DERP-only case. Always use
+  `-count=1`: Go's test cache does not know about network state and will
+  replay a cached pass from a different environment.
 
 - **x86-64 only.** The published artifacts are built on amd64 and the image is
   built for the runner's architecture, so on arm64 (Apple Silicon, Raspberry Pi)
