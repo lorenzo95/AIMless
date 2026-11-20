@@ -113,12 +113,18 @@ panel. Remove the container and its volume when done.
   those, re-run the job - a real regression fails consistently. Everything else
   in the suite is deterministic.
 
-- **The tailcat integration tests need a real network stack.** They start a local
-  DERP + STUN and drive magicsock. On a VM (or `docker run --network host`) they
-  pass in ~1.5-2.5s; inside a default docker bridge - no IPv6, restricted UDP
-  buffer sizes - `TestTailcatAddrPersistence` fails deterministically after a
-  sender restart, and raising its timeout does not help. If you reproduce CI in a
-  container, use host networking.
+- **`TestTailcatAddrPersistence` fails on an IPv4-only host - suspected product
+  issue, not a CI quirk.** The tailcat tests start a local DERP + STUN and drive
+  magicsock. With IPv6 available (the host, or `docker run --network host`) the
+  test passes in ~1.5s. In an IPv4-only netns (a default docker bridge, and
+  GitHub's runners) it fails deterministically: after the *sender* restarts,
+  delivery from the persisted address never completes. Raising its timeout does
+  not help, and neither does `--cap-add NET_ADMIN`, which removes the UDP buffer
+  warnings - so the trigger is the missing IPv6, not container privileges.
+  `TestTailcatReconnect` (receiver restart plus an explicit re-link) passes in
+  the same environment. This is the next thing to investigate; until it is
+  understood the tailcat CI job stays red on this one test. To reproduce CI
+  locally with a green tailcat job, use host networking.
 
 - **x86-64 only.** The published artifacts are built on amd64 and the image is
   built for the runner's architecture, so on arm64 (Apple Silicon, Raspberry Pi)
