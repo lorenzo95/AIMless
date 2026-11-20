@@ -139,10 +139,13 @@ Two region facts worth knowing:
   changes (within ~60s). A buddy you haven't talked to in a while may still need
   your new invite.
 
-To run your own relay (no rate limit, no revocability risk), run
-[`derper`](https://github.com/tailscale/tailscale/tree/main/cmd/derper) on a host
-with a TLS certificate and point the daemon's region at it. A self-hosted relay
-on a static IP also avoids the public-relay region-staleness issue.
+To run your own relay (no rate limit, no revocability risk), use the reference
+compose in [`derper/`](../derper/README.md): `derper` with automatic Let's Encrypt
+TLS, plus `probe.py` to check STUN, the DERP probe endpoints and the TLS upgrade
+from any machine. Point the daemon at it with the relay panel or the `relay` block
+(`{"hostname": "derp.example.com"}`) - AIMless builds region 900 from the hostname
+itself, so no tailnet and no DERP map URL are needed. A self-hosted relay on a
+static IP also avoids the public-relay region-staleness issue.
 
 ## Building and testing
 

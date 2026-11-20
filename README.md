@@ -254,9 +254,10 @@ Both peers must run tailcat and exchange **v2 invites** (`aimless2:...`, which c
 the dial address). Pick your **relay region** once before sharing invites (the
 "Relay …" menu item): it is baked into your address, so changing it later means
 buddies need your new invite. Saving applies right away by restarting the daemon.
-The default public DERP relays work out of the box;
-to run your own relay (no rate limits), use the same relay panel or the `relay`
-block in the daemon's `config.json`. Full details: **[docs/tailcat.md](docs/tailcat.md)**.
+The default public DERP relays work out of the box; to run your own relay (no rate
+limits) there is a ready-to-run compose and probe in **[derper/](derper/README.md)** -
+point the same relay panel, or the `relay` block in the daemon's `config.json`, at it.
+Full details: **[docs/tailcat.md](docs/tailcat.md)**.
 
 ---
 
@@ -278,6 +279,7 @@ The **client** owns identity, encryption and display. The **daemon** is a dumb, 
 | `daemon/` | Go | embedded Yggdrasil core, packet transport, journals/retry/ACK, attachments, blocklist, presence, local JSON API on a Unix socket |
 | `client/` | Python | identity, contacts, encrypted SQLite state, GTK app (rooms, files, themes, prefs) + CLI |
 | `deploy/` | - | webtop image, `package.sh` release builder, `check_dist.py` gate, two-node smoke test |
+| `derper/` | - | reference self-hosted DERP relay for tailcat: compose, `.env.example`, `probe.py` |
 
 ### Security model
 

@@ -1,0 +1,5 @@
+# Runtime data created on the relay host - never commit keys or certs.
+certs/
+state/
+# Your local hostname/config for docker compose.
+.env
