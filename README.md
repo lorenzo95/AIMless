@@ -1,8 +1,10 @@
 # AIMless
 
-![The AIMless window: a conversation with a buddy, the buddy list on the left, and the connection state in the bar at the bottom](docs/images/screenshot.png)
+![The AIMless window over tailcat: a conversation with a buddy showing delivered ticks and timestamps, the buddy list on the left, and the online state plus your address in the bar at the bottom](docs/images/screenshot.png)
 
-Serverless, end-to-end-encrypted chat over the [Yggdrasil](https://yggdrasil-network.github.io/) overlay network. No servers, no accounts, no ports to forward, no TUN device, no root.
+Serverless, end-to-end-encrypted chat. No servers, no accounts, no ports to forward, no TUN device, no root.
+
+The default transport is **[tailcat](https://github.com/tailscale/tailcat)** - Tailscale's data plane (WireGuard + magicsock + DERP) without the control plane. It hole-punches a **direct peer-to-peer path** when the network allows, and falls back to a DERP relay when it does not, so two machines behind NAT talk directly instead of routing through an overlay tree. **[Yggdrasil](https://yggdrasil-network.github.io/)** is the alternative transport: same client, same encryption, a different daemon binary.
 
 It is AIM for the mesh era: screen names, a buddy list, away messages, and messages that wait for you until you are back.
 
@@ -20,7 +22,7 @@ It is AIM for the mesh era: screen names, a buddy list, away messages, and messa
 ```sh
 docker run -d --name aimless-webtop --restart unless-stopped \
   -p 127.0.0.1:8080:8080 -p 127.0.0.1:5900:5900 \
-  -e VNC_PASS="aimless" \
+  -e VNC_PASS="aimless" -e AIMLESS_TRANSPORT=tailcat \
   -v "$PWD/aimless-data:/data" \
   ghcr.io/lorenzo95/aimless/aimless-webtop:latest
 ```
@@ -32,7 +34,7 @@ Open <http://localhost:8080/vnc.html>, password `aimless`. The first run asks yo
 ```sh
 docker run -d --name aimless-webtop2 --restart unless-stopped \
   -p 127.0.0.1:8081:8080 \
-  -e VNC_PASS="aimless" \
+  -e VNC_PASS="aimless" -e AIMLESS_TRANSPORT=tailcat \
   -v "$PWD/aimless-data2:/data" \
   ghcr.io/lorenzo95/aimless/aimless-webtop:latest
 ```
@@ -41,29 +43,25 @@ Open <http://localhost:8081/vnc.html>. In the first window choose **Contacts -> 
 
 > The container has no audio and no notification daemon, so sound and notifications are silent there by design. If you expose the page to the internet, put it behind TLS and a password, and change `VNC_PASS` - whoever reaches that page gets your desktop.
 
-**Same image, tailcat transport**: add `-e AIMLESS_TRANSPORT=tailcat` and give it its own volume. The entrypoint then fetches `aimlessd-tailcat-linux-amd64` and keeps that identity under `/data/tailcat`, so the two transports never mix:
+Both peers must run the same transport and exchange **v2 invites** (`aimless2:...`, which carry the dial address). Pick your **relay region** once before sharing invites: it is baked into your address, so changing it later means buddies need your new invite. The public DERP relays work out of the box; run your own with **[derper/](derper/README.md)** (no rate limits, no revocability risk).
 
-```sh
-docker run -d --name aimless-tailcat --restart unless-stopped \
-  -p 127.0.0.1:8082:8080 \
-  -e VNC_PASS="aimless" -e AIMLESS_TRANSPORT=tailcat \
-  -v "$PWD/aimless-tailcat-data:/data" \
-  ghcr.io/lorenzo95/aimless/aimless-webtop:latest
-```
+**Yggdrasil instead**: drop `-e AIMLESS_TRANSPORT=tailcat` from both commands. That is the only difference - the image serves both transports, and each keeps its own identity (`/data` for Yggdrasil, `/data/tailcat` for tailcat), so you can run one of each side by side.
 
-Open <http://localhost:8082/vnc.html>. Both peers must run tailcat and exchange **v2 invites**, and the relay region is part of your address - pick it before sharing invites. To pin a release instead of tracking `main`, add `-e AIMLESS_VERSION=v0.9.22`; see **[docs/releasing.md](docs/releasing.md)**. Run your own relay with **[derper/](derper/README.md)**; transport details in **[docs/tailcat.md](docs/tailcat.md)**.
+To pin a release instead of tracking `main`, add `-e AIMLESS_VERSION=v0.9.22`; see **[docs/releasing.md](docs/releasing.md)**. Transport details: **[docs/tailcat.md](docs/tailcat.md)**.
 
 ### On your own machine - two files, nothing to build
 
 ```sh
 mkdir -p ~/.local/bin && cd ~/.local/bin
-wget https://raw.githubusercontent.com/lorenzo95/Aimless/main/dist/aimlessd-linux-amd64
-wget https://raw.githubusercontent.com/lorenzo95/Aimless/main/dist/aimless.pyz
-chmod +x aimlessd-linux-amd64 aimless.pyz
-./aimless.pyz
+wget https://raw.githubusercontent.com/lorenzo95/Aimless/tailcat-transport/dist/aimlessd-tailcat-linux-amd64
+wget https://raw.githubusercontent.com/lorenzo95/Aimless/tailcat-transport/dist/aimless.pyz
+chmod +x aimlessd-tailcat-linux-amd64 aimless.pyz
+AIMLESS_DAEMON_BIN=$PWD/aimlessd-tailcat-linux-amd64 AIMLESS_HOME=~/.local/share/aimless-tc ./aimless.pyz
 ```
 
-That is the whole install. The daemon is a static binary with no dependencies, and the client is Python that talks to the GTK 3 stack your desktop already has. For a second client, run `./aimless.pyz` in another terminal and copy the invite between them.
+That is the whole install. The daemon is a static binary with no dependencies, and the client is Python that talks to the GTK 3 stack your desktop already has. `AIMLESS_DAEMON_BIN` selects the transport and `AIMLESS_HOME` keeps its keys, contacts and history separate - **give each client its own `AIMLESS_HOME`**. For a second client, run the same command with a different one (say `~/.local/share/aimless-tc2`) and copy the invite between them.
+
+> The download refs above are the `tailcat-transport` branch until the next merge; after it, `main` carries the same artifacts. Yggdrasil needs no env vars at all: download `aimlessd-linux-amd64` instead and just run `./aimless.pyz`.
 
 **If something is missing** (a bare container, a minimal server, a headless box):
 
@@ -84,7 +82,7 @@ If you have an old pip-installed client lying around, remove it first: `pip unin
 Two steps, in the window:
 
 1. **Your identity.** There is none on this machine yet: create one (a passphrase that protects your keys, plus a screen name), or restore a backup you exported earlier.
-2. **Your peers.** AIMless reaches the network through public peers. The built-in ones are nearby and checked, so you can keep them; the step also links to the current public list if you want to add one of your own. Skipping it is fine - the built-in list is already in place.
+2. **Your network.** On tailcat: pick your **relay region**. The public DERP relays work out of the box, and the region becomes part of your address, so choose before sharing invites (a restored backup keeps its region and skips this step). On Yggdrasil: the built-in public peer list works out of the box; the step lets you add your own.
 
 After that it is unlock, tray and window. `./aimless.pyz autostart` starts the whole stack at login.
 
@@ -118,7 +116,7 @@ The conversation you are reading does not jump when a new message lands in it - 
 
 The tooltip says why, the right-click menu shows the same state as a *Status:* line, and a notification fires when you go offline and again when you come back.
 
-The node is on the network as long as **one** peer is up, so the count alone is not the interesting number - the redundancy is:
+On **Yggdrasil** the node is on the network as long as **one** peer is up, so the count alone is not the interesting number - the redundancy is:
 
 | Peers up | What the tray shows | Why |
 |---|---|---|
@@ -129,6 +127,8 @@ The node is on the network as long as **one** peer is up, so the count alone is 
 
 A daemon that was deliberately configured with a single peer is not warned about: it has all the redundancy it asked for.
 
+On **tailcat** there is no peer count: the tray reflects the configured DERP **relay**, which the daemon TCP-probes every ~20s. A relay that does not resolve or does not answer shows as *relay not reachable* (reason on hover) instead of a false "online".
+
 Two different things can break, and both end up on the red icon with a different reason:
 
 | What broke | How we notice | The reason it shows |
@@ -136,11 +136,14 @@ Two different things can break, and both end up on the red icon with a different
 | the app cannot reach the daemon | our heartbeat stops landing | *the daemon is not answering* |
 | the daemon died | the supervisor notices and restarts it | *the daemon died - restarting* |
 | the ssh tunnel is down (remote mode) | the tunnel process is gone | *the ssh tunnel is down* |
-| the daemon is alive but has **no peer up** | the daemon's peer list | *no Yggdrasil peers - the daemon is on an island* |
+| the daemon is alive but has **no peer up** (Yggdrasil) | the daemon's peer list | *no Yggdrasil peers - the daemon is on an island* |
+| the configured **relay is unreachable** (tailcat) | a TCP probe to the relay every ~20s | *relay not reachable* (reason on hover) |
 
 The last one is the subtle one: the daemon answers, the app is happy, the window looks fine - and the node still cannot reach the overlay network, so nobody can reach you.
 
-## Peers
+## Peers (Yggdrasil transport)
+
+> This section applies to the **Yggdrasil** transport only. tailcat has no peers - it reaches a DERP **relay** instead: [docs/tailcat.md](docs/tailcat.md), [derper/](derper/README.md).
 
 `aimlessd` is an embedded Yggdrasil node, so it needs **peers** to reach anyone else. Out of the box it dials five of them, from five different operators, each pinned to its public key:
 
@@ -241,35 +244,47 @@ By default the client owns a local daemon: if your machine is off, a message sen
 
 The daemon holds ciphertext and the node key only - your identity stays on the client. **One client per daemon.** A daemon-only host has no client attached by design, so from the buddies' side that node shows as *client offline - messages will be delivered* until a client connects over the tunnel.
 
-## Alternative transport: tailcat (experimental)
+## Transports
 
-This branch can run over [tailcat](https://github.com/tailscale/tailcat) instead of
-Yggdrasil. tailcat is Tailscale's data plane (WireGuard + magicsock + DERP) without
-the control plane: it hole-punches a **direct peer-to-peer path** when the network
-allows and falls back to a DERP relay when it does not, so two machines behind NAT
-can talk directly instead of routing through the overlay tree. The E2E encryption
-is unchanged - tailcat is just a second encrypted transport underneath.
+One client, two daemon binaries. The transport is chosen **per machine** by which
+daemon you run - no runtime toggle, no dual-homing - and each keeps its own
+`AIMLESS_HOME` so keys, contacts and addresses never mix. Both peers must run the
+same transport. The E2E encryption is identical either way: the transport only
+ever carries ciphertext.
 
-It is a **separate daemon binary**, selected per machine (no runtime toggle, no
-dual-homing). To try it, download the tailcat daemon and point the client at it with
-a **separate `AIMLESS_HOME`** so its keys/contacts stay distinct from Yggdrasil:
+### tailcat (default)
 
-```sh
-mkdir -p ~/.local/bin && cd ~/.local/bin
-wget https://raw.githubusercontent.com/lorenzo95/Aimless/tailcat-transport/dist/aimlessd-tailcat-linux-amd64
-wget https://raw.githubusercontent.com/lorenzo95/Aimless/tailcat-transport/dist/aimless.pyz
-chmod +x aimlessd-tailcat-linux-amd64 aimless.pyz
-AIMLESS_DAEMON_BIN=$PWD/aimlessd-tailcat-linux-amd64 AIMLESS_HOME=~/.local/share/aimless-tc ./aimless.pyz
-```
+[tailcat](https://github.com/tailscale/tailcat) is Tailscale's data plane -
+WireGuard + magicsock + DERP - without the control plane. No account, no
+coordination server, no TUN device: it hole-punches a direct path when the network
+allows, and relays through DERP when it does not.
 
-Both peers must run tailcat and exchange **v2 invites** (`aimless2:...`, which carry
-the dial address). Pick your **relay region** once before sharing invites (the
-"Relay …" menu item): it is baked into your address, so changing it later means
-buddies need your new invite. Saving applies right away by restarting the daemon.
-The default public DERP relays work out of the box; to run your own relay (no rate
-limits) there is a ready-to-run compose and probe in **[derper/](derper/README.md)** -
-point the same relay panel, or the `relay` block in the daemon's `config.json`, at it.
+- **Invites are v2** (`aimless2:<client-pk>:<node-pk>:<addr>:<screen>`) and carry
+  the dial address.
+- **The relay region is part of your address.** Pick it once (*Relay …*) before
+  sharing invites. Buddies you already talk to pick up a changed address on their
+  own; anyone else needs your new invite.
+- **Public DERP relays work out of the box.** For your own - no rate limits, no
+  revocability risk - use **[derper/](derper/README.md)** (a compose file and a
+  probe), then point the relay panel or the `relay` block in the daemon's
+  `config.json` at it.
+- **Selecting it**: `AIMLESS_DAEMON_BIN=/path/to/aimlessd-tailcat-linux-amd64`
+  plus a separate `AIMLESS_HOME`, or `-e AIMLESS_TRANSPORT=tailcat` in the
+  container.
+
 Full details: **[docs/tailcat.md](docs/tailcat.md)**.
+
+### Yggdrasil (alternative)
+
+The original transport: an embedded
+[Yggdrasil](https://yggdrasil-network.github.io/) node, every peer addressed by its
+node key, reaching the mesh through public
+[peers](#peers-yggdrasil-transport). Invites are v1
+(`aimless1:<client-pk>:<node-pk>:<screen>`).
+
+Run `aimlessd-linux-amd64` with no `AIMLESS_DAEMON_BIN` and the default
+`AIMLESS_HOME`; in the container, omit `AIMLESS_TRANSPORT`. Peers, listeners and
+the mesh: **[docs/networking.md](docs/networking.md)**.
 
 ---
 
@@ -278,24 +293,24 @@ Full details: **[docs/tailcat.md](docs/tailcat.md)**.
 ```
 +-----------+  unix socket  +-----------+   encrypted packets  +-----------+  unix socket  +-----------+
 |  client   | ------------> |  aimlessd | --------------------> |  aimlessd | ------------> |  client   |
-| (Python)  |    NDJSON     |   (Go)    |  Yggdrasil overlay   |   (Go)    |    NDJSON     | (Python)  |
+| (Python)  |    NDJSON     |   (Go)    |  tailcat/Yggdrasil   |   (Go)    |    NDJSON     | (Python)  |
 +-----------+              +-----------+                       +-----------+              +-----------+
    plaintext                ciphertext                     ciphertext              plaintext
    in RAM only              journals on disk               journals on disk        in RAM only
 ```
 
-The **client** owns identity, encryption and display. The **daemon** is a dumb, durable relay: it journals ciphertext, retries until ACKed, stores file chunks and probes presence - it **never sees plaintext**. The transport is an embedded (no TUN) Yggdrasil node, and every peer is addressed by its node key.
+The **client** owns identity, encryption and display. The **daemon** is a dumb, durable relay: it journals ciphertext, retries until ACKed, stores file chunks and probes presence - it **never sees plaintext**. The transport is an embedded tailcat node (WireGuard + magicsock + DERP) or an embedded Yggdrasil node, both without a TUN device; either way every peer is addressed by its node key.
 
 | Piece | Language | Role |
 |---|---|---|
-| `daemon/` | Go | embedded Yggdrasil core, packet transport, journals/retry/ACK, attachments, blocklist, presence, local JSON API on a Unix socket |
+| `daemon/` | Go | embedded tailcat or Yggdrasil core, packet transport, journals/retry/ACK, attachments, blocklist, presence, local JSON API on a Unix socket |
 | `client/` | Python | identity, contacts, encrypted SQLite state, GTK app (rooms, files, themes, prefs) + CLI |
 | `deploy/` | - | webtop image, `package.sh` release builder, `check_dist.py` gate, two-node smoke test |
 | `derper/` | - | reference self-hosted DERP relay for tailcat: compose, `.env.example`, `probe.py` |
 
 ### Security model
 
-- **Identity** is a client Ed25519 keypair. Your invite (`aimless1:<client-pk>:<node-pk>:<screen>`) carries the client key (what friends encrypt to) and the node key (where to route). The Yggdrasil address is derived from the node key.
+- **Identity** is a client Ed25519 keypair. Your invite carries the client key (what friends encrypt to) and where to route: `aimless2:<client-pk>:<node-pk>:<addr>:<screen>` on tailcat, `aimless1:<client-pk>:<node-pk>:<screen>` on Yggdrasil, whose address is derived from the node key.
 - **E2E encryption** - per-recipient NaCl sealed boxes made by the client. Every message is Ed25519-signed and verified against the claimed sender, independently of the transport.
 - **The daemon cannot read messages, names, filenames or status.** It sees routing metadata only.
 - **No forward secrecy** - long-term keys, no ratchet. Anyone with your private key can decrypt past traffic; treat it like email, not Signal.
@@ -304,7 +319,7 @@ The **client** owns identity, encryption and display. The **daemon** is a dumb, 
 
 ### Under the hood
 
-Each datagram is an envelope over ironwood's encrypted `PacketConn`: a 20-byte header (`version=1`, `type`, `seq` uint64, `ts` ms, `payload_len`) plus the payload. Types: `MSG`, `ACK`, `STATUS`, `PROBE`, `FILE`.
+Each message is an envelope: a 20-byte header (`version=1`, `type`, `seq` uint64, `ts` ms, `payload_len`) plus the payload. Types: `MSG`, `ACK`, `STATUS`, `PROBE`, `FILE`. On Yggdrasil it rides ironwood's encrypted `PacketConn` as a datagram; on tailcat it rides a TCP stream inside the WireGuard tunnel. Same envelopes, same ACKs, same journals either way.
 
 - **MSG** - a sealed box from the sender's client. ACKed; the sender retries until then.
 - **STATUS** - a sealed screen/away blob. The daemon only sends the client's real status while a client has been active recently (a heartbeat); with no client attached it sends an **empty STATUS** as a "mailbox" marker, so buddies see *"client offline - messages will be delivered"* instead of available. On the receiving side an away buddy is **amber**, not green: reachable is not the same as at the keyboard.
@@ -321,15 +336,15 @@ Inside a MSG payload: `{"v":1,"kind":"msg","from":<hex>,"body":<canonical JSON>,
 | FILE | transfer id, chunk index/total, size | filename, MIME type, hash, contents |
 | STATUS/PROBE | source, timestamp | screen name, away message |
 
-The local API is a Unix socket speaking newline-delimited JSON; requests may carry an `id` that is echoed on the reply. Ops: `whoami`, `status`, `send`, `sendfile`, `history`, `watch`, `setstatus`, `setpeers`, `presence`, `block`/`unblock`/`blocklist`, `pendingattachments`/`fetchattachment`/`ackfile`. Events: `recv` and `acked`.
+The local API is a Unix socket speaking newline-delimited JSON; requests may carry an `id` that is echoed on the reply. Ops: `whoami`, `status`, `send`, `sendfile`, `history`, `watch`, `setstatus`, `setpeers`, `setrelay`, `presence`, `block`/`unblock`/`blocklist`, `pendingattachments`/`fetchattachment`/`ackfile`. Events: `recv` and `acked`.
 
-More detail lives in **[docs/networking.md](docs/networking.md)** (peers, listeners, the mesh) and **[docs/always-on-daemon.md](docs/always-on-daemon.md)** (running the daemon on a host that never sleeps).
+More detail lives in **[docs/tailcat.md](docs/tailcat.md)** (the default transport: relays, regions, addresses), **[docs/networking.md](docs/networking.md)** (Yggdrasil peers, listeners, the mesh) and **[docs/always-on-daemon.md](docs/always-on-daemon.md)** (running the daemon on a host that never sleeps).
 
 ## Building from source
 
 ```sh
-cd daemon && go build -o aimlessd . && ./aimlessd -datadir ~/.local/share/aimless/daemon
-cd daemon && go build -tags tailcat -o aimlessd-tailcat .   # alternative transport
+cd daemon && go build -tags tailcat -o aimlessd-tailcat .    # default transport
+cd daemon && go build -o aimlessd .                         # alternative: Yggdrasil
 cd ../client && pip install . && aimless
 ```
 
@@ -349,7 +364,7 @@ CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs the dist gate, 
 
 ## Status
 
-Experimental. Yggdrasil, tailcat and AIMless are all alpha - not for security-critical use.
+Experimental. tailcat, Yggdrasil and AIMless are all alpha - not for security-critical use.
 
 ---
 

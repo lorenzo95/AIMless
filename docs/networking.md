@@ -1,5 +1,8 @@
 # Networking: peers, listeners and the mesh
 
+> This page covers the **Yggdrasil** transport. tailcat is the default and has no
+> peers - it reaches a DERP relay instead: [tailcat.md](tailcat.md).
+
 `aimlessd` is an embedded [Yggdrasil](https://yggdrasil-network.github.io/) node. It
 needs no TUN device, no root and no open inbound ports - it dials *out* to peers
 and speaks to other daemons over the overlay, addressed by node key.

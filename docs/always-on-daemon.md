@@ -2,6 +2,10 @@
 
 Status: **implemented on this branch (0.9.0)**. Kept as the design record.
 
+> The tunnel is transport-agnostic: the daemon-only container takes
+> `AIMLESS_TRANSPORT=yggdrasil|tailcat` (see `deploy/docker/README.md`), and the
+> client selects the matching binary with `AIMLESS_DAEMON_BIN`.
+
 ## Problem
 
 Store-and-forward lives on the sending daemon. If the laptop sends a message

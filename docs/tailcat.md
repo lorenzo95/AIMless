@@ -1,14 +1,18 @@
-# The tailcat transport
+# The tailcat transport (default)
 
-AIMless can run over [tailcat](https://github.com/tailscale/tailcat) instead of
-Yggdrasil. tailcat is Tailscale's data plane (WireGuard + magicsock + DERP)
-without the control plane: pairwise, NAT-traversing, end-to-end encrypted
-tunnels addressed by public key. This page describes the alternative transport,
-how to switch to it, and how it differs from Yggdrasil.
+AIMless's **default transport** is [tailcat](https://github.com/tailscale/tailcat):
+Tailscale's data plane (WireGuard + magicsock + DERP) without the control plane -
+pairwise, NAT-traversing, end-to-end encrypted tunnels addressed by public key.
+It hole-punches a direct path when the network allows and relays through DERP
+when it does not. [Yggdrasil](networking.md) is the alternative transport: same
+client, same encryption, a different daemon binary.
 
-> Status: experimental, on the `tailcat-transport` branch. The Yggdrasil
-> transport remains the default. See `docs/tailcat-spike.md` for the Phase 0
-> measurements that gated the work.
+This page describes how tailcat works, how to select it, and how it differs from
+Yggdrasil.
+
+> Status: alpha. tailcat v0.7.0 makes no API/wire stability promises, so the
+> version is pinned. See `docs/tailcat-spike.md` for the Phase 0 measurements
+> that gated the work.
 
 ## Why
 
