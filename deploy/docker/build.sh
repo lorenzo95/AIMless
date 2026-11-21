@@ -48,4 +48,8 @@ export AIMLESS_IMAGE=aimless-webtop:local
 export AIMLESS_FETCH=never
 export AIMLESS_TRANSPORT="$TRANSPORT"
 
-docker compose -f "$COMPOSE" up -d "$@"
+# --force-recreate: the artifacts are bind-mounted, so a recreated container is
+# what actually picks them up. Without it compose sees an unchanged image tag
+# and config, leaves the old processes running, and the rebuild silently does
+# nothing.
+docker compose -f "$COMPOSE" up -d --force-recreate "$@"
