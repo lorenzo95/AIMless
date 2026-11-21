@@ -9,7 +9,7 @@ The default transport is **[tailcat](https://github.com/tailscale/tailcat)** - T
 It is AIM for the mesh era: screen names, a buddy list, away messages, and messages that wait for you until you are back.
 
 - **End-to-end encrypted** - per-recipient NaCl sealed boxes, made by your client. The relay never sees plaintext.
-- **Serverless** - your identity is an Ed25519 keypair and your address is derived from it.
+- **Serverless** - your identity is an Ed25519 keypair and your address is derived from your keys. No account, nothing to register.
 - **Durable** - messages and files are journaled and retried until delivered, even if the other side is offline.
 - **A desktop app and a CLI** - a GTK app with a tray icon, plus a headless command line.
 
@@ -47,21 +47,21 @@ Both peers must run the same transport and exchange **v2 invites** (`aimless2:..
 
 **Yggdrasil instead**: drop `-e AIMLESS_TRANSPORT=tailcat` from both commands. That is the only difference - the image serves both transports, and each keeps its own identity (`/data` for Yggdrasil, `/data/tailcat` for tailcat), so you can run one of each side by side.
 
-To pin a release instead of tracking `main`, add `-e AIMLESS_VERSION=v0.9.22`; see **[docs/releasing.md](docs/releasing.md)**. Transport details: **[docs/tailcat.md](docs/tailcat.md)**.
+To pin a release instead of tracking `main`, add `-e AIMLESS_VERSION=v0.9.23`; see **[docs/releasing.md](docs/releasing.md)**. Transport details: **[docs/tailcat.md](docs/tailcat.md)**.
 
 ### On your own machine - two files, nothing to build
 
 ```sh
 mkdir -p ~/.local/bin && cd ~/.local/bin
-wget https://raw.githubusercontent.com/lorenzo95/Aimless/tailcat-transport/dist/aimlessd-tailcat-linux-amd64
-wget https://raw.githubusercontent.com/lorenzo95/Aimless/tailcat-transport/dist/aimless.pyz
+wget https://raw.githubusercontent.com/lorenzo95/Aimless/main/dist/aimlessd-tailcat-linux-amd64
+wget https://raw.githubusercontent.com/lorenzo95/Aimless/main/dist/aimless.pyz
 chmod +x aimlessd-tailcat-linux-amd64 aimless.pyz
 AIMLESS_DAEMON_BIN=$PWD/aimlessd-tailcat-linux-amd64 AIMLESS_HOME=~/.local/share/aimless-tc ./aimless.pyz
 ```
 
 That is the whole install. The daemon is a static binary with no dependencies, and the client is Python that talks to the GTK 3 stack your desktop already has. `AIMLESS_DAEMON_BIN` selects the transport and `AIMLESS_HOME` keeps its keys, contacts and history separate - **give each client its own `AIMLESS_HOME`**. For a second client, run the same command with a different one (say `~/.local/share/aimless-tc2`) and copy the invite between them.
 
-> The download refs above are the `tailcat-transport` branch until the next merge; after it, `main` carries the same artifacts. Yggdrasil needs no env vars at all: download `aimlessd-linux-amd64` instead and just run `./aimless.pyz`.
+> Yggdrasil needs no env vars at all: download `aimlessd-linux-amd64` instead and just run `./aimless.pyz`.
 
 **If something is missing** (a bare container, a minimal server, a headless box):
 

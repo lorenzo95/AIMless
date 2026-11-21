@@ -84,10 +84,13 @@ dialog (passphrase + confirm + screen name). Fill it in and you're set.
 
 ```bash
 # web desktop over tailcat (e.g. against your own DERP relay)
-AIMLESS_TRANSPORT=tailcat AIMLESS_VERSION=tailcat-transport docker compose up -d --force-recreate
+AIMLESS_TRANSPORT=tailcat docker compose up -d --force-recreate
 
 # headless tailcat daemon
-AIMLESS_TRANSPORT=tailcat AIMLESS_VERSION=tailcat-transport docker compose -f docker-compose.daemon.yml up -d --force-recreate
+AIMLESS_TRANSPORT=tailcat docker compose -f docker-compose.daemon.yml up -d --force-recreate
+
+# or pin a ref instead of tracking main (a release tag, or an unmerged branch)
+AIMLESS_TRANSPORT=tailcat AIMLESS_VERSION=v0.9.23 docker compose up -d --force-recreate
 ```
 
 The client pyz is the same for both. Each transport gets its **own identity,

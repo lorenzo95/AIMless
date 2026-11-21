@@ -1,6 +1,6 @@
-"""aimless - serverless instant messaging over the Yggdrasil overlay network."""
+"""aimless - serverless, end-to-end-encrypted chat over tailcat or Yggdrasil."""
 
-__version__ = "0.9.22"
+__version__ = "0.9.23"
 
 # v2 is a clean break: client and daemon must match. The daemon refuses peers
 # whose protocol version differs, and the client refuses an older daemon rather

@@ -449,7 +449,7 @@ def main():
 
     parser = argparse.ArgumentParser(
         prog="aimless",
-        description="aimless - serverless instant messaging over the Yggdrasil overlay network\n\n"
+        description="aimless - serverless, end-to-end-encrypted chat over tailcat or Yggdrasil\n\n"
                     "run `aimless` with no arguments to start everything: tray + daemon + messages window",
         formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--version", action="version", version=f"aimless {__version__}")
